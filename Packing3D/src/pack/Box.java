@@ -1,0 +1,99 @@
+package pack;
+
+public class Box
+{
+	public enum Orientation { LW, WL, HW, HL, WH, LH };
+	
+	private static Instance _instance;
+	private static Discretization _discretization;
+
+	private Orientation _orientation;
+	private int _i;
+	private int _j;
+	private int _k;
+	
+	public static void initialize(Instance instance, Discretization discretization)
+	{
+		_instance = instance;
+		_discretization = discretization;
+	}
+	
+	public Box(int i, int j, int k, Orientation orientation)
+	{
+		if( _instance == null )
+			throw new RuntimeException("Box class not initialized!");
+
+		_i = i;
+		_j = j;
+		_k = k;
+		_orientation = orientation;
+	}
+	
+	public int geti()
+	{
+		return _i;
+	}
+	
+	public int getj()
+	{
+		return _j;
+	}
+	
+	public int getk()
+	{
+		return _k;
+	}
+	
+	public Orientation getOrientation()
+	{
+		return _orientation;
+	}
+	
+	public int getLength()
+	{
+		if( _orientation == Orientation.LW || _orientation == Orientation.LH )
+			return _instance.getl();
+
+		if( _orientation == Orientation.WH || _orientation == Orientation.WL )
+			return _instance.getw();
+		
+		return _instance.geth();
+	}
+	
+	public int getWidth()
+	{
+		if( _orientation == Orientation.HL || _orientation == Orientation.WL )
+			return _instance.getl();
+
+		if( _orientation == Orientation.HW || _orientation == Orientation.LW )
+			return _instance.getw();
+		
+		return _instance.geth();
+	}
+	
+	public int getHeight()
+	{
+		if( _orientation == Orientation.HW || _orientation == Orientation.WH )
+			return _instance.getl();
+
+		if( _orientation == Orientation.HL || _orientation == Orientation.LH )
+			return _instance.getw();
+		
+		return _instance.geth();
+	}
+	
+	public int getx()
+	{
+		return _discretization.getx(_i);
+	}
+	
+	public int gety()
+	{
+		return _discretization.gety(_j);
+	}
+	
+	public int getz()
+	{
+		return _discretization.getz(_k);
+	}
+}

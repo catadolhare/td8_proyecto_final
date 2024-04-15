@@ -61,17 +61,17 @@ public class Discretization
 		return _K.length;
 	}
 	
-	public int getI(int i)
+	public int getx(int i)
 	{
 		return _I[i];
 	}
 	
-	public int getJ(int j)
+	public int gety(int j)
 	{
 		return _J[j];
 	}
 	
-	public int getK(int k)
+	public int getz(int k)
 	{
 		return _K[k];
 	}

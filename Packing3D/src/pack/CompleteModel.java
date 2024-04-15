@@ -11,7 +11,6 @@ public class CompleteModel
 	
 	private boolean _verbose = false;
 
-	
 	public CompleteModel(Instance instance)
 	{
 		_instance = instance;
