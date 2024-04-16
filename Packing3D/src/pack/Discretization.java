@@ -44,21 +44,6 @@ public class Discretization
 
 		for(int k=0; k<ck; ++k)
 			_K[k] = valores.get(k);
-		
-//		System.out.print("I = [");
-//		for(int i=0; i<ci; ++i)
-//			System.out.print(_I[i] + " ");
-//		System.out.println("]");
-//		
-//		System.out.print("J = [");
-//		for(int i=0; i<cj; ++i)
-//			System.out.print(_J[i] + " ");
-//		System.out.println("]");
-//		
-//		System.out.print("K = [");
-//		for(int i=0; i<ck; ++i)
-//			System.out.print(_K[i] + " ");
-//		System.out.println("]");
 	}
 	
 	public int sizeI()

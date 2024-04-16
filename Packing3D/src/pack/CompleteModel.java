@@ -107,13 +107,9 @@ public class CompleteModel
 	
 	private void createStabilityConstraints() throws IloException
 	{
-		System.out.println(_discretization.sizeI());
-		System.out.println(_discretization.sizeJ());
-		System.out.println(_discretization.sizeK());
-
 		for(int i=0; i<_discretization.sizeI(); ++i)
 		for(int j=0; j<_discretization.sizeJ(); ++j)
-		for(int k=0; k<_discretization.sizeK(); ++k)
+		for(int k=1; k<_discretization.sizeK(); ++k)
 		for(int l=0; l<_orientations.length; ++l) if( _x[i][j][k][l] != null )
 		{
 			IloNumExpr lhs = _cplex.linearIntExpr();
@@ -121,7 +117,7 @@ public class CompleteModel
 
 			for(int ip=0; ip<_discretization.sizeI(); ++ip)
 			for(int jp=0; jp<_discretization.sizeJ(); ++jp)
-			for(int kp=1; kp<_discretization.sizeK(); ++kp)
+			for(int kp=0; kp<_discretization.sizeK(); ++kp)
 			for(int lp=0; lp<_orientations.length; ++lp) if( _box[ip][jp][kp][lp] != null && _box[ip][jp][kp][lp].getTop() == _box[i][j][k][l].getz() )
 			{
 				lhs = _cplex.sum(lhs, _cplex.prod(-_box[i][j][k][l].intersectionSurface(_box[ip][jp][kp][lp]), _x[ip][jp][kp][lp]));
@@ -150,6 +146,8 @@ public class CompleteModel
 				System.out.print("y = " + _discretization.gety(j) + ", ");
 				System.out.println("z = " + _discretization.getz(k) + ")");
 			}
+			
+			System.out.println("Obj value = " + _cplex.getObjValue());
 		}
 	}
 }
