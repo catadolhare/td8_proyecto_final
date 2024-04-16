@@ -1,7 +1,10 @@
 package pack;
 
 import ilog.concert.IloException;
+import ilog.concert.IloNumExpr;
+import ilog.concert.IloNumVar;
 import ilog.cplex.IloCplex;
+import ilog.cplex.IloCplex.DoubleParam;
 
 public class CompleteModel
 {
@@ -9,12 +12,17 @@ public class CompleteModel
 	private Discretization _discretization;
 	private IloCplex _cplex;
 	
+	private IloNumVar[][][][] _x;
+	private Box[][][][] _box;
+	private Box.Orientation[] _orientations;
+	
 	private boolean _verbose = false;
 
-	public CompleteModel(Instance instance)
+	public CompleteModel(Instance instance, Discretization discretization)
 	{
 		_instance = instance;
-		_discretization = new Discretization(instance);
+		_discretization = discretization;
+		_orientations = Box.Orientation.values();
 	}
 	
 	public void solve()
@@ -26,11 +34,122 @@ public class CompleteModel
 			if( _verbose == false )
 				_cplex.setOut(null);
 			
+			createVariables();
+			createObjective();
+			createIndependenceConstraints();
+			createStabilityConstraints();
+			solveModel();
+			
 			_cplex.end();
 		}
 		catch (IloException e)
 		{
 			e.printStackTrace();
+		}
+	}
+	
+	private void createVariables() throws IloException
+	{
+		_x = new IloNumVar[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length]; 
+		_box = new Box[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length]; 
+		
+		for(int i=0; i<_discretization.sizeI(); ++i)
+		for(int j=0; j<_discretization.sizeJ(); ++j)
+		for(int k=0; k<_discretization.sizeK(); ++k)
+		for(int l=0; l<_orientations.length; ++l)
+		{
+			Box box = new Box(i, j, k, _orientations[l]);
+			
+			if( box.fits() == true )
+			{
+				_x[i][j][k][l] = _cplex.boolVar("x" + i + "_" + j + "_" + k + "_" + _orientations[l]);
+				_box[i][j][k][l] = box;
+			}
+		}
+	}
+	
+	private void createObjective() throws IloException
+	{
+		IloNumExpr fobj = _cplex.linearIntExpr();
+		
+		for(int i=0; i<_discretization.sizeI(); ++i)
+		for(int j=0; j<_discretization.sizeJ(); ++j)
+		for(int k=0; k<_discretization.sizeK(); ++k)
+		for(int l=0; l<_orientations.length; ++l)
+		{
+			if( _x[i][j][k][l] != null )
+				fobj = _cplex.sum(fobj, _x[i][j][k][l]);
+		}
+		
+		_cplex.addMaximize(fobj);
+	}
+	
+	private void createIndependenceConstraints() throws IloException
+	{
+		for(int i=0; i<_discretization.sizeI(); ++i)
+		for(int j=0; j<_discretization.sizeJ(); ++j)
+		for(int k=0; k<_discretization.sizeK(); ++k)
+		{
+			IloNumExpr lhs = _cplex.linearIntExpr();
+		
+			for(int ip=0; ip<_discretization.sizeI(); ++ip)
+			for(int jp=0; jp<_discretization.sizeJ(); ++jp)
+			for(int kp=0; kp<_discretization.sizeK(); ++kp)
+			for(int lp=0; lp<_orientations.length; ++lp)
+			{
+				if( _box[ip][jp][kp][lp] != null && _box[ip][jp][kp][lp].contains(i,j,k) )
+					lhs = _cplex.sum(lhs, _x[ip][jp][kp][lp]);
+			}
+			
+			_cplex.addLe(lhs, 1, "ind" + i + "_" + j + "_" + k);
+		}
+	}
+	
+	private void createStabilityConstraints() throws IloException
+	{
+		System.out.println(_discretization.sizeI());
+		System.out.println(_discretization.sizeJ());
+		System.out.println(_discretization.sizeK());
+
+		for(int i=0; i<_discretization.sizeI(); ++i)
+		for(int j=0; j<_discretization.sizeJ(); ++j)
+		for(int k=0; k<_discretization.sizeK(); ++k)
+		for(int l=0; l<_orientations.length; ++l) if( _x[i][j][k][l] != null )
+		{
+			IloNumExpr lhs = _cplex.linearIntExpr();
+			lhs = _cplex.sum(lhs, _cplex.prod(_instance.getStabilityThreshold() * _box[i][j][k][l].floorSurface(), _x[i][j][k][l]));
+
+			for(int ip=0; ip<_discretization.sizeI(); ++ip)
+			for(int jp=0; jp<_discretization.sizeJ(); ++jp)
+			for(int kp=1; kp<_discretization.sizeK(); ++kp)
+			for(int lp=0; lp<_orientations.length; ++lp) if( _box[ip][jp][kp][lp] != null && _box[ip][jp][kp][lp].getTop() == _box[i][j][k][l].getz() )
+			{
+				lhs = _cplex.sum(lhs, _cplex.prod(-_box[i][j][k][l].intersectionSurface(_box[ip][jp][kp][lp]), _x[ip][jp][kp][lp]));
+			}
+			
+			_cplex.addLe(lhs, 0, "stab" + i + "_" + j + "_" + k + "_" + l);
+		}
+	}
+	
+	private void solveModel() throws IloException
+	{
+		_cplex.exportModel("c:\\users\\jmarenco\\Desktop\\modelo.lp");
+		_cplex.setParam(DoubleParam.TimeLimit, 600);
+		_cplex.solve();
+		
+		System.out.println(_cplex.getStatus());
+		if( _cplex.getStatus() == IloCplex.Status.Optimal || _cplex.getStatus() == IloCplex.Status.Feasible )
+		{
+			for(int i=0; i<_discretization.sizeI(); ++i)
+			for(int j=0; j<_discretization.sizeJ(); ++j)
+			for(int k=0; k<_discretization.sizeK(); ++k)
+			for(int l=0; l<_orientations.length; ++l) if( _x[i][j][k][l] != null && _cplex.getValue(_x[i][j][k][l]) > 0.1 )
+			{
+				System.out.print("x[" + i + "," + j + "," + k + "," + _orientations[l] + "] = " + _cplex.getValue(_x[i][j][k][l]));
+				System.out.print(" (x = " + _discretization.getx(i) + ", ");
+				System.out.print("y = " + _discretization.gety(j) + ", ");
+				System.out.println("z = " + _discretization.getz(k) + ")");
+			}
 		}
 	}
 }

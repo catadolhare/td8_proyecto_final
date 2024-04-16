@@ -8,6 +8,7 @@ public class Instance
 	private int _l;
 	private int _w;
 	private int _h;
+	private double _stabilityThreshold = 0.7;
 	
 	public Instance(int L, int W, int H, int l, int w, int h)
 	{
@@ -47,5 +48,10 @@ public class Instance
 	public int geth()
 	{
 		return _h;
+	}
+	
+	public double getStabilityThreshold()
+	{
+		return _stabilityThreshold;
 	}
 }
