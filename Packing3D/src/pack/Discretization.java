@@ -25,25 +25,25 @@ public class Discretization
 		for(int k=0; k <= max / _instance.geth(); ++k) if( i*_instance.getl() + j*_instance.getw() + k*_instance.geth() < max )
 			set.add(i*_instance.getl() + j*_instance.getw() + k*_instance.geth());
 		
-		ArrayList<Integer> valores = new ArrayList<Integer>(set);
-		Collections.sort(valores);
+		ArrayList<Integer> values = new ArrayList<Integer>(set);
+		Collections.sort(values);
 		
-		int ci = (int)valores.stream().filter(v -> v < _instance.getL()).count();
-		int cj = (int)valores.stream().filter(v -> v < _instance.getW()).count();
-		int ck = (int)valores.stream().filter(v -> v < _instance.getH()).count();
+		int ci = (int)values.stream().filter(v -> v < _instance.getL()).count();
+		int cj = (int)values.stream().filter(v -> v < _instance.getW()).count();
+		int ck = (int)values.stream().filter(v -> v < _instance.getH()).count();
 		
 		_I = new int[ci];
 		_J = new int[cj];
 		_K = new int[ck];
 		
 		for(int i=0; i<ci; ++i)
-			_I[i] = valores.get(i);
+			_I[i] = values.get(i);
 
 		for(int j=0; j<cj; ++j)
-			_J[j] = valores.get(j);
+			_J[j] = values.get(j);
 
 		for(int k=0; k<ck; ++k)
-			_K[k] = valores.get(k);
+			_K[k] = values.get(k);
 	}
 	
 	public int sizeI()

@@ -1,16 +1,21 @@
 package pack;
 
+import java.util.ArrayList;
+
 import ilog.concert.IloException;
 import ilog.concert.IloNumExpr;
 import ilog.concert.IloNumVar;
 import ilog.cplex.IloCplex;
 import ilog.cplex.IloCplex.DoubleParam;
+import pack.Box.Orientation;
+import pack.Callback.Type;
 
 public class CompleteModel
 {
 	private Instance _instance;
 	private Discretization _discretization;
 	private IloCplex _cplex;
+	private ArrayList<Callback> _callbacks;
 	
 	private IloNumVar[][][][] _x;
 	private Box[][][][] _box;
@@ -23,6 +28,7 @@ public class CompleteModel
 		_instance = instance;
 		_discretization = discretization;
 		_orientations = Box.Orientation.values();
+		_callbacks = new ArrayList<Callback>();
 	}
 	
 	public void solve()
@@ -48,7 +54,7 @@ public class CompleteModel
 		}
 	}
 	
-	private void createVariables() throws IloException
+	protected void createVariables() throws IloException
 	{
 		_x = new IloNumVar[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length]; 
 		_box = new Box[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length]; 
@@ -66,9 +72,11 @@ public class CompleteModel
 				_box[i][j][k][l] = box;
 			}
 		}
+		
+		notify(Type.VariablesCreated);
 	}
 	
-	private void createObjective() throws IloException
+	protected void createObjective() throws IloException
 	{
 		IloNumExpr fobj = _cplex.linearIntExpr();
 		
@@ -82,9 +90,10 @@ public class CompleteModel
 		}
 		
 		_cplex.addMaximize(fobj);
+		notify(Type.ObjectiveCreated);
 	}
 	
-	private void createIndependenceConstraints() throws IloException
+	protected void createIndependenceConstraints() throws IloException
 	{
 		for(int i=0; i<_discretization.sizeI(); ++i)
 		for(int j=0; j<_discretization.sizeJ(); ++j)
@@ -105,7 +114,7 @@ public class CompleteModel
 		}
 	}
 	
-	private void createStabilityConstraints() throws IloException
+	protected void createStabilityConstraints() throws IloException
 	{
 		for(int i=0; i<_discretization.sizeI(); ++i)
 		for(int j=0; j<_discretization.sizeJ(); ++j)
@@ -125,9 +134,11 @@ public class CompleteModel
 			
 			_cplex.addLe(lhs, 0, "stab" + i + "_" + j + "_" + k + "_" + l);
 		}
+		
+		notify(Type.ConstraintsCreated);
 	}
 	
-	private void solveModel() throws IloException
+	protected void solveModel() throws IloException
 	{
 		_cplex.exportModel("c:\\users\\jmarenco\\Desktop\\modelo.lp");
 		_cplex.setParam(DoubleParam.TimeLimit, 600);
@@ -148,6 +159,28 @@ public class CompleteModel
 			}
 			
 			System.out.println("Obj value = " + _cplex.getObjValue());
+		}
+		
+		notify(Type.ModelSolved);
+	}
+	
+	public void register(Callback callback)
+	{
+		_callbacks.add(callback);
+	}
+	
+	public void notify(Callback.Type type)
+	{
+		for(Callback c: _callbacks)
+			c.notify(type);
+	}
+	
+	public void removeVariable(int i, int j, int k, Orientation l)
+	{
+		for(int lp=0; lp<_orientations.length; ++lp) if( _orientations[lp] == l )
+		{
+			_x[i][j][k][lp] = null;
+			_box[i][j][k][lp] = null;
 		}
 	}
 }
