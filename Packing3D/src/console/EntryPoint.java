@@ -7,7 +7,6 @@ public class EntryPoint
 	public static void main(String[] args)
 	{
 		Instance instance = new Instance(20, 10, 10, 10, 7, 5);
-//		Instance instance = new Instance(40, 30, 20, 8, 5, 9);
 		Discretization discretization = new Discretization(instance);
 		Box.initialize(instance, discretization);
 		

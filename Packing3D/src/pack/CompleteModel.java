@@ -140,7 +140,6 @@ public class CompleteModel
 	
 	protected void solveModel() throws IloException
 	{
-		_cplex.exportModel("c:\\users\\jmarenco\\Desktop\\modelo.lp");
 		_cplex.setParam(DoubleParam.TimeLimit, 600);
 		_cplex.solve();
 		
