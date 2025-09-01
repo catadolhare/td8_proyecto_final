@@ -21,7 +21,7 @@ public class CompleteModel
 	private Box[][][][] _box;
 	private Box.Orientation[] _orientations;
 	
-	private boolean _verbose = false;
+	private boolean _verbose = true;
 
 	public CompleteModel(Instance instance, Discretization discretization)
 	{
@@ -33,25 +33,47 @@ public class CompleteModel
 	
 	public void solve()
 	{
-		try
-		{
-			_cplex = new IloCplex();
-			
-			if( _verbose == false )
-				_cplex.setOut(null);
-			
-			createVariables();
-			createObjective();
-			createIndependenceConstraints();
-			createStabilityConstraints();
-			solveModel();
-			
-			_cplex.end();
-		}
-		catch (IloException e)
-		{
-			e.printStackTrace();
-		}
+		try {
+	        // ===== PRIMERA FASE: RELAJACIÓN LINEAL =====
+	        _cplex = new IloCplex();
+
+	        if (!_verbose) _cplex.setOut(null);
+
+	        // Variables continuas en [0,1]
+	        createVariablesRelaxed();
+	        createObjective();
+	        createIndependenceConstraints();
+	        createStabilityConstraints();
+	        _cplex.solve();
+
+	        // Filtrar variables "no relevantes"
+	        double eps = 1e-4;
+	        for (int i=0; i<_discretization.sizeI(); i++)
+	        for (int j=0; j<_discretization.sizeJ(); j++)
+	        for (int k=0; k<_discretization.sizeK(); k++)
+	        for (int l=0; l<_orientations.length; l++) {
+	            if (_x[i][j][k][l] != null && _cplex.getValue(_x[i][j][k][l]) < eps) {
+	                removeVariable(i, j, k, _orientations[l]);
+	            }
+	        }
+
+	        _cplex.end();
+
+	        // ===== SEGUNDA FASE: MODELO ENTERO REDUCIDO =====
+	        _cplex = new IloCplex();
+	        if (!_verbose) _cplex.setOut(null);
+
+	        createVariables();                // ahora sí binaria
+	        createObjective();
+	        createIndependenceConstraints();
+	        createStabilityConstraints();
+	        solveModel();                      // método original de resolución
+
+	        _cplex.end();
+	    }
+	    catch (IloException e) {
+	        e.printStackTrace();
+	    }
 	}
 	
 	protected void createVariables() throws IloException
@@ -74,6 +96,24 @@ public class CompleteModel
 		}
 		
 		notify(Type.VariablesCreated);
+	}
+	
+	protected void createVariablesRelaxed() throws IloException {
+	    _x = new IloNumVar[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length]; 
+	    _box = new Box[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length]; 
+
+	    for(int i=0; i<_discretization.sizeI(); i++)
+	    for(int j=0; j<_discretization.sizeJ(); j++)
+	    for(int k=0; k<_discretization.sizeK(); k++)
+	    for(int l=0; l<_orientations.length; l++) {
+	        Box box = new Box(i, j, k, _orientations[l]);
+	        if (box.fits()) {
+	            // Variable continua [0,1] en vez de binaria
+	            _x[i][j][k][l] = _cplex.numVar(0.0, 1.0, "x" + i + "_" + j + "_" + k + "_" + _orientations[l]);
+	            _box[i][j][k][l] = box;
+	        }
+	    }
+	    notify(Type.VariablesCreated);
 	}
 	
 	protected void createObjective() throws IloException
@@ -118,12 +158,12 @@ public class CompleteModel
 	{
 		for(int i=0; i<_discretization.sizeI(); ++i)
 		for(int j=0; j<_discretization.sizeJ(); ++j)
+			
 		for(int k=1; k<_discretization.sizeK(); ++k)
 		for(int l=0; l<_orientations.length; ++l) if( _x[i][j][k][l] != null )
 		{
 			IloNumExpr lhs = _cplex.linearIntExpr();
 			lhs = _cplex.sum(lhs, _cplex.prod(_instance.getStabilityThreshold() * _box[i][j][k][l].floorSurface(), _x[i][j][k][l]));
-
 			for(int ip=0; ip<_discretization.sizeI(); ++ip)
 			for(int jp=0; jp<_discretization.sizeJ(); ++jp)
 			for(int kp=0; kp<_discretization.sizeK(); ++kp)
@@ -141,7 +181,16 @@ public class CompleteModel
 	protected void solveModel() throws IloException
 	{
 		_cplex.setParam(DoubleParam.TimeLimit, 600);
+		
+		long start_time = System.nanoTime();
+		
 		_cplex.solve();
+		
+		long end_time = System.nanoTime();
+		
+		double total_time = (end_time - start_time)/1_000_000.0;
+		
+		System.out.println("Tiempo de resolución (CPLEX) = " + (total_time/1000) + " segundos");
 		
 		System.out.println(_cplex.getStatus());
 		if( _cplex.getStatus() == IloCplex.Status.Optimal || _cplex.getStatus() == IloCplex.Status.Feasible )
