@@ -21,7 +21,7 @@ public class CompleteModel
 	private Box[][][][] _box;
 	private Box.Orientation[] _orientations;
 	
-	private boolean _verbose = true;
+	private boolean _verbose = false;
 
 	public CompleteModel(Instance instance, Discretization discretization)
 	{
@@ -33,10 +33,9 @@ public class CompleteModel
 	
 	public void solve()
 	{
-		try {
+	    try {
 	        // ===== PRIMERA FASE: RELAJACIÓN LINEAL =====
 	        _cplex = new IloCplex();
-
 	        if (!_verbose) _cplex.setOut(null);
 
 	        // Variables continuas en [0,1]
@@ -44,22 +43,24 @@ public class CompleteModel
 	        createObjective();
 	        createIndependenceConstraints();
 	        createStabilityConstraints();
-	        _cplex.solve();
+	        _cplex.solve();  // resolvemos relajación (sin medir tiempo)
 
 	        // Filtrar variables "no relevantes"
 	        double eps = 1e-4;
+	        int eliminadas = 0;
 	        for (int i=0; i<_discretization.sizeI(); i++)
 	        for (int j=0; j<_discretization.sizeJ(); j++)
 	        for (int k=0; k<_discretization.sizeK(); k++)
 	        for (int l=0; l<_orientations.length; l++) {
 	            if (_x[i][j][k][l] != null && _cplex.getValue(_x[i][j][k][l]) < eps) {
 	                removeVariable(i, j, k, _orientations[l]);
+	                eliminadas++;
 	            }
 	        }
-
-	        _cplex.end();
+	        System.out.println("Cantidad de variables eliminadas tras la relajación lineal: " + eliminadas);
 
 	        // ===== SEGUNDA FASE: MODELO ENTERO REDUCIDO =====
+	        _cplex.end();
 	        _cplex = new IloCplex();
 	        if (!_verbose) _cplex.setOut(null);
 
@@ -67,7 +68,13 @@ public class CompleteModel
 	        createObjective();
 	        createIndependenceConstraints();
 	        createStabilityConstraints();
+
+	        // Medimos tiempo solo aquí
+	        long start_time = System.nanoTime();
 	        solveModel();                      // método original de resolución
+	        long end_time = System.nanoTime();
+	        double total_time = (end_time - start_time)/1_000_000.0;
+	        System.out.println("Tiempo de resolución (segunda pasada) = " + (total_time/1000) + " segundos");
 
 	        _cplex.end();
 	    }
@@ -75,16 +82,14 @@ public class CompleteModel
 	        e.printStackTrace();
 	    }
 	}
+
 	
 	protected void createVariables() throws IloException
 	{
-		_x = new IloNumVar[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length]; 
-		_box = new Box[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length]; 
-		
 		for(int i=0; i<_discretization.sizeI(); ++i)
 		for(int j=0; j<_discretization.sizeJ(); ++j)
 		for(int k=0; k<_discretization.sizeK(); ++k)
-		for(int l=0; l<_orientations.length; ++l)
+		for(int l=0; l<_orientations.length; ++l) if( _x[i][j][k][l] != null )
 		{
 			Box box = new Box(i, j, k, _orientations[l]);
 			
@@ -181,16 +186,10 @@ public class CompleteModel
 	protected void solveModel() throws IloException
 	{
 		_cplex.setParam(DoubleParam.TimeLimit, 600);
-		
-		long start_time = System.nanoTime();
+	
 		
 		_cplex.solve();
 		
-		long end_time = System.nanoTime();
-		
-		double total_time = (end_time - start_time)/1_000_000.0;
-		
-		System.out.println("Tiempo de resolución (CPLEX) = " + (total_time/1000) + " segundos");
 		
 		System.out.println(_cplex.getStatus());
 		if( _cplex.getStatus() == IloCplex.Status.Optimal || _cplex.getStatus() == IloCplex.Status.Feasible )
