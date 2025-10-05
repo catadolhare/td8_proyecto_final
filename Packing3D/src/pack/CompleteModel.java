@@ -46,7 +46,7 @@ public class CompleteModel
 	        _cplex.solve();  // resolvemos relajación (sin medir tiempo)
 
 	        // Filtrar variables "no relevantes"
-	        double eps = 1e-4;
+	        double eps = 1e-2;
 	        int eliminadas = 0;
 	        for (int i=0; i<_discretization.sizeI(); i++)
 	        for (int j=0; j<_discretization.sizeJ(); j++)
