@@ -3,46 +3,59 @@ package console;
 import pack.*;
 
 public class EntryPoint {
+
     public static void main(String[] args) {
         ArgMap argmap = new ArgMap(args);
+
         if (argmap.containsArg("-help")) {
             showParameters();
             return;
         }
 
-        int L = argmap.intArg("-L", 20);
-        int W = argmap.intArg("-W", 10);
-        int H = argmap.intArg("-H", 10);
-        int l = argmap.intArg("-l", 5);
-        int w = argmap.intArg("-w", 5);
-        int h = argmap.intArg("-h", 7);
+        // === Lectura de parámetros del contenedor y la caja ===
+        int L = argmap.intArg("-L", 20);  // largo contenedor
+        int W = argmap.intArg("-W", 10);  // ancho contenedor
+        int H = argmap.intArg("-H", 10);  // alto contenedor
+        int l = argmap.intArg("-l", 5);   // largo caja
+        int w = argmap.intArg("-w", 5);   // ancho caja
+        int h = argmap.intArg("-h", 7);   // alto caja
 
+        System.out.println("=====================================");
+        System.out.println("🚀 Iniciando ejecución de la heurística por capas (con relleno 3D)");
+        System.out.println("Contenedor: " + L + " × " + W + " × " + H);
+        System.out.println("Caja: " + l + " × " + w + " × " + h);
+        System.out.println("=====================================\n");
+
+        // === Inicialización de la instancia ===
         Instance instance = new Instance(L, W, H, l, w, h);
         Discretization discretization = new Discretization(instance);
         Box.initialize(instance, discretization);
 
-        // Ejecutar la heurística completa
-        HeuristicResult result = LayerHeuristic.run(instance);
+        // === Ejecutar la heurística completa ===
+        long startTime = System.nanoTime();
+        LayerHeuristic.run(instance);
+        long endTime = System.nanoTime();
 
-        // Mostrar resumen final (legible por tu script Python)
-        System.out.println("\n=== RESUMEN FINAL (para script) ===");
-        System.out.println("Mejor orientación: " + result.bestOrientation);
-        System.out.println("Cajas por capa: " + result.boxesPerLayer);
-        System.out.println("Cantidad de capas: " + result.layers);
-        System.out.println("Cajas relleno vertical: " + result.verticalFillBoxes);
-        System.out.println("Orientación relleno vertical: " + result.verticalFillOrientation);
-        System.out.println("Cajas relleno residual: " + result.residualBoxes);
-        System.out.println("Total final de cajas: " + result.totalFinal());
-        System.out.printf("Tiempo total de resolución: %.2f\n",
-                (result.solveTime + result.fillTime + result.residualTime) / 1000);
+        double totalSeconds = (endTime - startTime) / 1_000_000_000.0;
+
+        System.out.printf("\n=== EJECUCIÓN FINALIZADA ===\n");
+        System.out.printf("⏱️  Tiempo total: %.2f segundos (%.2f minutos)\n", totalSeconds, totalSeconds / 60.0);
+        System.out.println("=====================================");
     }
 
     private static void showParameters() {
-        System.out.println("  -L [n]     Length of container");
-        System.out.println("  -W [n]     Width of container");
-        System.out.println("  -H [n]     Height of container");
-        System.out.println("  -l [n]     Length of each box");
-        System.out.println("  -w [n]     Width of each box");
-        System.out.println("  -h [n]     Height of each box");
+        System.out.println("Uso:");
+        System.out.println("  java -jar programa.jar -L [n] -W [n] -H [n] -l [n] -w [n] -h [n]");
+        System.out.println();
+        System.out.println("Parámetros:");
+        System.out.println("  -L [n]   Largo del contenedor");
+        System.out.println("  -W [n]   Ancho del contenedor");
+        System.out.println("  -H [n]   Alto del contenedor");
+        System.out.println("  -l [n]   Largo de la caja");
+        System.out.println("  -w [n]   Ancho de la caja");
+        System.out.println("  -h [n]   Alto de la caja");
+        System.out.println();
+        System.out.println("Ejemplo:");
+        System.out.println("  java -jar programa.jar -L 20 -W 10 -H 10 -l 5 -w 5 -h 7");
     }
 }

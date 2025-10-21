@@ -1,158 +1,178 @@
 package pack;
 
-import ilog.cplex.IloCplex;
+import ilog.concert.IloException;
 
 public class LayerHeuristic {
-	
-	private IloCplex _cplex;
 
-    public static HeuristicResult run(Instance instance) {
-        Discretization disc = new Discretization(instance);
-        HeuristicResult result = new HeuristicResult();
+    public static void run(Instance instance) {
+        try {
+            Discretization disc = new Discretization(instance);
+            System.out.printf("Discretización: I=%d, J=%d, K=%d%n",
+            	    disc.sizeI(), disc.sizeJ(), disc.sizeK());
 
-        int bestTotal = 0;
-        Box.Orientation bestOrientation = null;
-        int bestBoxesPerLayer = 0;
-        double bestTime = 0.0;
-        int bestLayers = 0;
 
-        System.out.println("=== Heurística por Capas (versión completa) ===");
-        System.out.println("Contenedor: L=" + instance.getL() + " W=" + instance.getW() + " H=" + instance.getH());
-        System.out.println();
+            int bestTotal = 0;
+            Box.Orientation bestOrientation = null;
+            int bestBoxesPerLayer = 0;
+            int bestLayers = 0;
+            double bestTime = 0.0;
+            int best3DFillBoxes = 0;
 
-        // ==== FASE 1: Capas idénticas ====
-        for (Box.Orientation o : Box.Orientation.values()) {
-            Box sample = new Box(0, 0, 0, o);
-            int layerHeight = sample.getHeight();
-            int layers = instance.getH() / layerHeight;
+            System.out.println("=== Heurística por Capas (PLE con relleno 3D) ===");
+            System.out.printf("Contenedor: L=%d, W=%d, H=%d%n", instance.getL(), instance.getW(), instance.getH());
 
-            CompleteModel model = new CompleteModel(instance, disc);
-            model.solve();
+            // ==== FASE 1: capas idénticas con modelo 2D ====
+            for (Box.Orientation o : Box.Orientation.values()) {
+                Box sample = new Box(0, 0, 0, o);
+                int layerHeight = sample.getHeight();
 
-            int boxesInLayer = (int) Math.round(model._cplex.getObjValue());
-            double solveTime = model._cplex.getCplexTime();
-            int totalBoxes = boxesInLayer * layers;
+                // Si la caja es más alta que el contenedor, descartar orientación
+                if (layerHeight > instance.getH()) continue;
 
-            System.out.printf("Orientación %-10s → %3d cajas por capa × %2d capas = %3d cajas totales\n",
-                    o.toString(), boxesInLayer, layers, totalBoxes);
+                int layers = instance.getH() / layerHeight; // cantidad de capas completas
+                if (layers == 0) continue;
 
-            if (totalBoxes > bestTotal) {
-                bestTotal = totalBoxes;
-                bestOrientation = o;
-                bestBoxesPerLayer = boxesInLayer;
-                bestTime = solveTime;
-                bestLayers = layers;
-            }
-        }
+                // Resolver una sola capa con CompleteModel2D
+                CompleteModel2D model = new CompleteModel2D(instance, disc, o, 0);
+                model.solve();
 
-        System.out.println("\n=== Resultado Fase 1 ===");
-        System.out.println("Mejor orientación: " + bestOrientation);
-        System.out.println("Cajas por capa: " + bestBoxesPerLayer);
-        System.out.println("Cantidad de capas: " + bestLayers);
-        System.out.println("Total de cajas (capas idénticas): " + bestTotal);
-        System.out.printf("Tiempo total de resolución (1 capa): %.2f segundos\n", bestTime / 1000);
+                int boxesInLayer = model.getSolutionCount();
+                double solveTime = model.getSolveTime();
+                int totalBoxes = boxesInLayer * layers;
 
-        // Guardar resultados Fase 1
-        result.bestOrientation = bestOrientation;
-        result.boxesPerLayer = bestBoxesPerLayer;
-        result.layers = bestLayers;
-        result.totalBoxes = bestTotal;
-        result.solveTime = bestTime;
+                System.out.printf("Orientación %-10s → %3d cajas/capa × %2d capas = %3d cajas totales%n",
+                        o.toString(), boxesInLayer, layers, totalBoxes);
 
-        // ==== FASE 2: Relleno vertical ====
-        Box sample = new Box(0, 0, 0, bestOrientation);
-        int usedHeight = bestLayers * sample.getHeight();
-        int remainingHeight = instance.getH() - usedHeight;
-
-        if (remainingHeight > 0) {
-            System.out.println("\n=== Fase 2: Relleno vertical ===");
-            System.out.println("Altura restante disponible: " + remainingHeight);
-
-            int bestFillBoxes = 0;
-            Box.Orientation bestFillOrientation = null;
-            double bestFillTime = 0.0;
-
-            for (Box.Orientation o2 : Box.Orientation.values()) {
-                Box testBox = new Box(0, 0, 0, o2);
-                if (testBox.getHeight() <= remainingHeight) {
-                    CompleteModel fillModel = new CompleteModel(instance, disc);
-                    fillModel.solve();
-                    int fillCount = (int) Math.round(fillModel._cplex.getObjValue());
-                    if (fillCount > bestFillBoxes) {
-                        bestFillBoxes = fillCount;
-                        bestFillOrientation = o2;
-                        bestFillTime = fillModel._cplex.getCplexTime();
-                    }
+                if (totalBoxes > bestTotal) {
+                    bestTotal = totalBoxes;
+                    bestOrientation = o;
+                    bestBoxesPerLayer = boxesInLayer;
+                    bestLayers = layers;
+                    bestTime = solveTime;
                 }
             }
+            
+            
 
-            System.out.println("Mejor orientación de relleno vertical: " + bestFillOrientation);
-            System.out.println("Cajas adicionales: " + bestFillBoxes);
-            System.out.println("Total con relleno vertical: " + (bestTotal + bestFillBoxes));
-            System.out.printf("Tiempo adicional de relleno: %.2f segundos\n", bestFillTime / 1000);
+            // === Resultado Fase 1 ===
+            System.out.println("\n=== Resultado Fase 1 (capas 2D) ===");
+            System.out.println("Mejor orientación: " + bestOrientation);
+            System.out.println("Cajas por capa: " + bestBoxesPerLayer);
+            System.out.println("Cantidad de capas: " + bestLayers);
+            System.out.println("Total de cajas (capas): " + bestTotal);
+            System.out.printf("Tiempo total (1 capa): %.2f segundos%n", bestTime / 1000.0);
+            
 
-            result.verticalFillBoxes = bestFillBoxes;
-            result.verticalFillOrientation = bestFillOrientation;
-            result.fillTime = bestFillTime;
+            // ==== FASE 2: Relleno 3D ====
+            System.out.println("\n=== Fase 2: Construyendo matriz de ocupación ===");
 
-        } else {
-            System.out.println("\nNo queda espacio vertical para relleno.");
-            result.verticalFillBoxes = 0;
-        }
+            boolean[][][] occupied = buildOccupiedMatrix(bestOrientation, bestLayers, disc, instance);
+            int occupiedCount = 0;
+            for (int i = 0; i < disc.sizeI(); i++)
+              for (int j = 0; j < disc.sizeJ(); j++)
+                for (int k = 0; k < disc.sizeK(); k++)
+                  if (occupied[i][j][k]) occupiedCount++;
 
-        // ==== FASE 3: Relleno 3D residual ====
-        System.out.println("\n=== Fase 3: Relleno 3D residual ===");
-        boolean[][][] occupied = buildOccupiedMatrix(bestOrientation, bestLayers, disc, instance);
-        ResidualCompleteModel residual = new ResidualCompleteModel(instance, disc, occupied);
-        residual.solve();
+            System.out.printf("Celdas ocupadas: %d / %d (%.2f%%)%n",
+                occupiedCount, disc.sizeI() * disc.sizeJ() * disc.sizeK(),
+                100.0 * occupiedCount / (disc.sizeI() * disc.sizeJ() * disc.sizeK()));
 
-        // obtener cantidad de cajas nuevas del modelo residual
-        int residualBoxes = (int) Math.round(residual._cplex.getObjValue());
-        double residualTime = residual._cplex.getCplexTime();
-        System.out.println("Cajas adicionales del modelo 3D residual: " + residualBoxes);
-        System.out.printf("Tiempo adicional (3D residual): %.2f segundos\n", residualTime / 1000);
 
-        result.residualBoxes = residualBoxes;
-        result.residualTime = residualTime;
-
-        // ==== RESULTADO FINAL ====
-        System.out.println("\n=== Resultado Final ===");
-        System.out.println("Mejor orientación: " + result.bestOrientation);
-        System.out.println("Cajas por capa: " + result.boxesPerLayer);
-        System.out.println("Cantidad de capas: " + result.layers);
-        System.out.println("Total (capas + relleno + residual): " + result.totalFinal());
-        System.out.printf("Tiempo total: %.2f segundos\n",
-                (result.solveTime + result.fillTime + result.residualTime) / 1000);
-
-        return result;
-    }
-
-    // Construye la matriz de posiciones ocupadas
-    private static boolean[][][] buildOccupiedMatrix(Box.Orientation orientation, int layers,
-                                                     Discretization disc, Instance instance) {
-        boolean[][][] occupied = new boolean[disc.sizeI()][disc.sizeJ()][disc.sizeK()];
-
-        Box bSample = new Box(0, 0, 0, orientation);
-        int layerHeight = bSample.getHeight();
-
-        for (int k = 0; k < layers; k++) {
+            double freeRatio = computeFreeRatio(occupied, disc);
+            System.out.printf("Volumen libre restante: %.2f%% del contenedor%n", freeRatio * 100);
+            
+            System.out.println("Mapa de ocupación (Z = última capa usada):");
+            int topLayerIndex = bestLayers - 1;
             for (int i = 0; i < disc.sizeI(); i++) {
                 for (int j = 0; j < disc.sizeJ(); j++) {
-                    Box b = new Box(i, j, k, orientation);
-                    if (b.fits()) {
-                        int kStart = k * layerHeight;
-                        int kEnd = Math.min(kStart + b.getHeight(), disc.sizeK() - 1);
-                        for (int ip = i; ip < i + b.getLength() && ip < disc.sizeI(); ip++) {
-                            for (int jp = j; jp < j + b.getWidth() && jp < disc.sizeJ(); jp++) {
-                                for (int kp = kStart; kp <= kEnd; kp++) {
-                                    occupied[ip][jp][kp] = true;
-                                }
-                            }
-                        }
-                    }
+                    System.out.print(occupied[i][j][topLayerIndex] ? "█" : ".");
                 }
+                System.out.println();
             }
+
+
+            if (freeRatio < 0.01) {
+                System.out.println("No queda volumen libre significativo para relleno.");
+            } else {
+                // Crear modelo 3D para relleno
+            	// Crear y resolver modelo 3D para relleno
+            	CompleteModel fill3D = new CompleteModel(instance, disc, occupied);
+            	System.out.println("Resolviendo modelo de relleno 3D...");
+            	fill3D.solve();
+            	System.out.println("Estado CPLEX (relleno): " + fill3D.getStatus());
+            	System.out.println("Valor objetivo CPLEX (relleno): " + fill3D.getObjectiveValue());
+
+
+            	// Leer objetivo y estado con getters (ya que CompleteModel guarda antes de cerrar CPLEX)
+            	int fillBoxes = 0;
+            	ilog.cplex.IloCplex.Status fillStatus = fill3D.getStatus();
+            	if (fillStatus == ilog.cplex.IloCplex.Status.Optimal || fillStatus == ilog.cplex.IloCplex.Status.Feasible) {
+            	    double objVal = fill3D.getObjectiveValue(); // seguro, no usa CPLEX interno
+            	    fillBoxes = (int) Math.round(objVal);
+            	    System.out.println("Cajas adicionales (relleno 3D): " + fillBoxes);
+            	    System.out.println("Total final de cajas: " + (bestTotal + fillBoxes));
+            	} else {
+            	    System.out.println("⚠️ Modelo de relleno no retorna solución útil. Estado: " + fillStatus);
+            	}
+
+                bestTotal += fillBoxes;
+                best3DFillBoxes = fillBoxes;
+            }
+
+
+            // ==== RESUMEN FINAL ====
+            System.out.println("\n=== RESUMEN FINAL ===");
+            System.out.println("Mejor orientación: " + bestOrientation);
+            System.out.println("Cajas por capa: " + bestBoxesPerLayer);
+            System.out.println("Cantidad de capas: " + bestLayers);
+            System.out.println("Cajas 3D adicionales: " + best3DFillBoxes);
+            System.out.println("Total final de cajas: " + bestTotal);
+
+        } catch (Exception e) {
+            System.err.println("❌ Error durante la ejecución de la heurística:");
+            e.printStackTrace();
         }
-        return occupied;
+    }
+
+    /**
+     * Marca las posiciones ocupadas por las capas apiladas en la matriz 3D.
+     */
+    	private static boolean[][][] buildOccupiedMatrix(Box.Orientation orientation, int layers,
+            Discretization disc, Instance instance) {
+    		boolean[][][] occupied = new boolean[disc.sizeI()][disc.sizeJ()][disc.sizeK()];
+
+    		Box box = new Box(0, 0, 0, orientation);
+    		int boxHeight = box.getHeight();
+    		int usedHeight = layers * boxHeight;
+
+    		for (int i = 0; i < disc.sizeI(); i++) {
+    			for (int j = 0; j < disc.sizeJ(); j++) {
+    				for (int k = 0; k < disc.sizeK(); k++) {
+    					int z = disc.getz(k);
+
+    					// ✅ CORREGIDO: ocupa todas las celdas debajo de la altura usada
+    					if (z + boxHeight <= usedHeight) {
+    						occupied[i][j][k] = true;
+    					}
+    				}
+    			}
+    		}
+
+    		return occupied;
+    	}
+
+    /**
+     * Calcula el porcentaje de volumen libre.
+     */
+    private static double computeFreeRatio(boolean[][][] occupied, Discretization disc) {
+        int total = disc.sizeI() * disc.sizeJ() * disc.sizeK();
+        int occ = 0;
+
+        for (int i = 0; i < disc.sizeI(); i++)
+            for (int j = 0; j < disc.sizeJ(); j++)
+                for (int k = 0; k < disc.sizeK(); k++)
+                    if (occupied[i][j][k]) occ++;
+
+        return (double) (total - occ) / total;
     }
 }

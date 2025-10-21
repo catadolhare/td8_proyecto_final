@@ -3,6 +3,9 @@ package pack;
 import ilog.concert.*;
 import ilog.cplex.IloCplex;
 import ilog.cplex.IloCplex.DoubleParam;
+import java.util.List;
+import java.util.ArrayList;
+
 
 public class CompleteModel2D {
 
@@ -105,4 +108,22 @@ public class CompleteModel2D {
     public double getSolveTime() {
         return _solveTime;
     }
+    
+    public List<int[]> getSelectedPositions() {
+        List<int[]> positions = new ArrayList<>();
+        try {
+            if (_cplex.getStatus() == IloCplex.Status.Optimal ||
+                _cplex.getStatus() == IloCplex.Status.Feasible) {
+
+                for (int i = 0; i < _discretization.sizeI(); i++)
+                    for (int j = 0; j < _discretization.sizeJ(); j++)
+                        if (_x[i][j] != null && _cplex.getValue(_x[i][j]) > 0.5)
+                            positions.add(new int[]{i, j});
+            }
+        } catch (IloException e) {
+            e.printStackTrace();
+        }
+        return positions;
+    }
+
 }
