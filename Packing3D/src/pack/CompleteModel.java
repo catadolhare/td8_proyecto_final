@@ -1,209 +1,130 @@
 package pack;
 
-import java.util.ArrayList;
 import ilog.concert.*;
-import ilog.cplex.IloCplex;
-import ilog.cplex.IloCplex.DoubleParam;
-import pack.Box.Orientation;
-import pack.Callback.Type;
+import ilog.cplex.*;
 
 public class CompleteModel {
+
     private Instance _instance;
-    protected Discretization _discretization;
-    protected IloCplex _cplex;
-    private ArrayList<Callback> _callbacks;
+    private Discretization _disc;
+    public IloCplex _cplex;
+    private IloNumVar[][][][] _x; // x[i][j][k][o] = 1 si hay caja en (i,j,k) con orientación o
+    private double _solveTime;
+    private boolean[][][] _occupiedInput;
 
-    protected IloNumVar[][][][] _x;
-    protected Box[][][][] _box;
-    private Box.Orientation[] _orientations;
-
-    private boolean _verbose = false;
-    private boolean[][][] _occupied; // matriz que indica posiciones ocupadas (true = ya ocupada)
-
-    private double _objectiveValue = 0.0;
-    private ilog.cplex.IloCplex.Status _status = null;
-
-
-    // === Constructor clásico ===
-    public CompleteModel(Instance instance, Discretization discretization) {
+    public CompleteModel(Instance instance, Discretization disc, boolean[][][] occupied) {
         _instance = instance;
-        _discretization = discretization;
-        _orientations = Box.Orientation.values();
-        _callbacks = new ArrayList<>();
-        _occupied = null;
+        _disc = disc;
+        _occupiedInput = occupied;
     }
 
-    // === Constructor extendido con matriz ocupada ===
-    public CompleteModel(Instance instance, Discretization discretization, boolean[][][] occupied) {
-        this(instance, discretization);
-        this._occupied = occupied;
-    }
+    public void solve() throws IloException {
+        _cplex = new IloCplex();
+        int I = _disc.sizeI();
+        int J = _disc.sizeJ();
+        int K = _disc.sizeK();
+        Box.Orientation[] orientations = Box.Orientation.values();
 
-    // === Método principal de resolución ===
-    public void solve() {
-        try {
-            _cplex = new IloCplex();
-            if (!_verbose) _cplex.setOut(null);
+        // === Variables ===
+        _x = new IloNumVar[I][J][K][orientations.length];
+        for (int i = 0; i < I; i++)
+            for (int j = 0; j < J; j++)
+                for (int k = 0; k < K; k++)
+                    for (int o = 0; o < orientations.length; o++)
+                        _x[i][j][k][o] = _cplex.boolVar("x_" + i + "_" + j + "_" + k + "_" + orientations[o]);
 
-            createVariables();
-            createObjective();
-            createIndependenceConstraints();
-            createStabilityConstraints();
-
-            _cplex.setParam(DoubleParam.TimeLimit, 180); // 3 minutos
-            _cplex.solve();
-
-            System.out.println(_cplex.getStatus());
-            if (_cplex.getStatus() == IloCplex.Status.Optimal || _cplex.getStatus() == IloCplex.Status.Feasible) {
-                for (int i = 0; i < _discretization.sizeI(); ++i)
-                    for (int j = 0; j < _discretization.sizeJ(); ++j)
-                        for (int k = 0; k < _discretization.sizeK(); ++k)
-                            for (int l = 0; l < _orientations.length; ++l)
-                                if (_x[i][j][k][l] != null && _cplex.getValue(_x[i][j][k][l]) > 0.1) {
-                                    System.out.printf("x[%d,%d,%d,%s] = %.1f (x=%d, y=%d, z=%d)%n",
-                                            i, j, k, _orientations[l], _cplex.getValue(_x[i][j][k][l]),
-                                            _discretization.getx(i), _discretization.gety(j), _discretization.getz(k));
-                                }
-                _status = _cplex.getStatus();
-
-                if (_status == IloCplex.Status.Optimal || _status == IloCplex.Status.Feasible) {
-                    try {
-                        _objectiveValue = _cplex.getObjValue();
-                    } catch (IloException e) {
-                        _objectiveValue = 0.0;
-                    }
+        // === Restricciones: una sola orientación por celda ===
+        for (int i = 0; i < I; i++)
+            for (int j = 0; j < J; j++)
+                for (int k = 0; k < K; k++) {
+                    IloLinearNumExpr expr = _cplex.linearNumExpr();
+                    for (int o = 0; o < orientations.length; o++)
+                        expr.addTerm(1, _x[i][j][k][o]);
+                    _cplex.addLe(expr, 1, "OneOrient_" + i + "_" + j + "_" + k);
                 }
 
+        // === Restricciones: no colocar cajas fuera del contenedor o en celdas ocupadas ===
+        for (int i = 0; i < I; i++) {
+            for (int j = 0; j < J; j++) {
+                for (int k = 0; k < K; k++) {
+                    for (int o = 0; o < orientations.length; o++) {
+                        Box b = new Box(i, j, k, orientations[o]);
 
-                System.out.println("Obj value = " + _cplex.getObjValue());
+                        // Si la caja no cabe o está fuera, o la celda ya está ocupada, la variable se fija en 0
+                        if (!b.fits() || (_occupiedInput != null && _occupiedInput[i][j][k])) {
+                            _cplex.addEq(_x[i][j][k][o], 0);
+                        }
+                    }
+                }
             }
-
-            notify(Type.ModelSolved);
-            _cplex.end();
-
-        } catch (IloException e) {
-            e.printStackTrace();
         }
-    }
-    
-    public double getObjectiveValue() {
-        return _objectiveValue;
-    }
 
-    public ilog.cplex.IloCplex.Status getStatus() {
-        return _status;
-    }
+        // === Restricciones de no solapamiento ===
+        for (int i1 = 0; i1 < I; i1++) {
+            for (int j1 = 0; j1 < J; j1++) {
+                for (int k1 = 0; k1 < K; k1++) {
+                    for (int o1 = 0; o1 < orientations.length; o1++) {
+                        Box b1 = new Box(i1, j1, k1, orientations[o1]);
+                        if (!b1.fits()) continue;
 
+                        for (int i2 = 0; i2 < I; i2++) {
+                            for (int j2 = 0; j2 < J; j2++) {
+                                for (int k2 = 0; k2 < K; k2++) {
+                                    for (int o2 = 0; o2 < orientations.length; o2++) {
+                                        if (i1 == i2 && j1 == j2 && k1 == k2 && o1 == o2) continue;
+                                        Box b2 = new Box(i2, j2, k2, orientations[o2]);
+                                        if (!b2.fits()) continue;
 
-    // === Creación de variables ===
-    protected void createVariables() throws IloException {
-        _x = new IloNumVar[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length];
-        _box = new Box[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length];
+                                        boolean overlapX = !(b1.getx() + b1.getLength() <= b2.getx() || b2.getx() + b2.getLength() <= b1.getx());
+                                        boolean overlapY = !(b1.gety() + b1.getWidth() <= b2.gety() || b2.gety() + b2.getWidth() <= b1.gety());
+                                        boolean overlapZ = !(b1.getz() + b1.getHeight() <= b2.getz() || b2.getz() + b2.getHeight() <= b1.getz());
 
-        for (int i = 0; i < _discretization.sizeI(); ++i)
-            for (int j = 0; j < _discretization.sizeJ(); ++j)
-                for (int k = 0; k < _discretization.sizeK(); ++k)
-                    for (int l = 0; l < _orientations.length; ++l) {
-
-                        // Si la celda ya está ocupada, se omite
-                        if (_occupied != null && _occupied[i][j][k])
-                            continue;
-
-                        Box box = new Box(i, j, k, _orientations[l]);
-                        if (box.fits()) {
-                            _x[i][j][k][l] = _cplex.boolVar("x_" + i + "_" + j + "_" + k + "_" + _orientations[l]);
-                            _box[i][j][k][l] = box;
+                                        if (overlapX && overlapY && overlapZ) {
+                                            IloLinearNumExpr expr = _cplex.linearNumExpr();
+                                            expr.addTerm(1, _x[i1][j1][k1][o1]);
+                                            expr.addTerm(1, _x[i2][j2][k2][o2]);
+                                            _cplex.addLe(expr, 1);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
-
-        notify(Type.VariablesCreated);
-    }
-
-    // === Función objetivo: maximizar número de cajas ===
-    protected void createObjective() throws IloException {
-        IloNumExpr fobj = _cplex.linearIntExpr();
-
-        for (int i = 0; i < _discretization.sizeI(); ++i)
-            for (int j = 0; j < _discretization.sizeJ(); ++j)
-                for (int k = 0; k < _discretization.sizeK(); ++k)
-                    for (int l = 0; l < _orientations.length; ++l)
-                        if (_x[i][j][k][l] != null)
-                            fobj = _cplex.sum(fobj, _x[i][j][k][l]);
-
-        _cplex.addMaximize(fobj);
-        notify(Type.ObjectiveCreated);
-    }
-
-    // === Restricciones de independencia (no solapamiento) ===
-    protected void createIndependenceConstraints() throws IloException {
-        for (int i = 0; i < _discretization.sizeI(); ++i)
-            for (int j = 0; j < _discretization.sizeJ(); ++j)
-                for (int k = 0; k < _discretization.sizeK(); ++k) {
-
-                    // Si la celda está ocupada (por las capas), la fijamos como ya llena
-                    if (_occupied != null && _occupied[i][j][k])
-                        continue;
-
-                    IloNumExpr lhs = _cplex.linearIntExpr();
-
-                    for (int ip = 0; ip < _discretization.sizeI(); ++ip)
-                        for (int jp = 0; jp < _discretization.sizeJ(); ++jp)
-                            for (int kp = 0; kp < _discretization.sizeK(); ++kp)
-                                for (int lp = 0; lp < _orientations.length; ++lp)
-                                    if (_box[ip][jp][kp][lp] != null && _box[ip][jp][kp][lp].contains(i, j, k))
-                                        lhs = _cplex.sum(lhs, _x[ip][jp][kp][lp]);
-
-                    _cplex.addLe(lhs, 1, "ind_" + i + "_" + j + "_" + k);
                 }
-    }
-
-    // === Restricciones de estabilidad (no flotar) ===
-    protected void createStabilityConstraints() throws IloException {
-        for (int i = 0; i < _discretization.sizeI(); ++i)
-            for (int j = 0; j < _discretization.sizeJ(); ++j)
-                for (int k = 1; k < _discretization.sizeK(); ++k)
-                    for (int l = 0; l < _orientations.length; ++l)
-                        if (_x[i][j][k][l] != null) {
-
-                            IloNumExpr lhs = _cplex.linearIntExpr();
-                            lhs = _cplex.sum(lhs, _cplex.prod(
-                                    _instance.getStabilityThreshold() * _box[i][j][k][l].floorSurface(),
-                                    _x[i][j][k][l]));
-
-                            for (int ip = 0; ip < _discretization.sizeI(); ++ip)
-                                for (int jp = 0; jp < _discretization.sizeJ(); ++jp)
-                                    for (int kp = 0; kp < _discretization.sizeK(); ++kp)
-                                        for (int lp = 0; lp < _orientations.length; ++lp)
-                                            if (_box[ip][jp][kp][lp] != null
-                                                    && _box[ip][jp][kp][lp].getTop() == _box[i][j][k][l].getz()) {
-                                                lhs = _cplex.sum(lhs,
-                                                        _cplex.prod(-_box[i][j][k][l]
-                                                                .intersectionSurface(_box[ip][jp][kp][lp]),
-                                                                _x[ip][jp][kp][lp]));
-                                            }
-
-                            _cplex.addLe(lhs, 0, "stab_" + i + "_" + j + "_" + k + "_" + l);
-                        }
-
-        notify(Type.ConstraintsCreated);
-    }
-
-    // === Gestión de callbacks (por si se usan en CPLEX) ===
-    public void register(Callback callback) {
-        _callbacks.add(callback);
-    }
-
-    public void notify(Callback.Type type) {
-        for (Callback c : _callbacks)
-            c.notify(type);
-    }
-
-    // === Eliminar una variable específica ===
-    public void removeVariable(int i, int j, int k, Orientation l) {
-        for (int lp = 0; lp < _orientations.length; ++lp)
-            if (_orientations[lp] == l) {
-                _x[i][j][k][lp] = null;
-                _box[i][j][k][lp] = null;
             }
+        }
+
+        // === Función objetivo: maximizar cajas colocadas ===
+        IloLinearNumExpr obj = _cplex.linearNumExpr();
+        for (int i = 0; i < I; i++)
+            for (int j = 0; j < J; j++)
+                for (int k = 0; k < K; k++)
+                    for (int o = 0; o < orientations.length; o++)
+                        obj.addTerm(1, _x[i][j][k][o]);
+        _cplex.addMaximize(obj);
+
+        // === Resolver ===
+        _cplex.setOut(null);
+        long start = System.currentTimeMillis();
+        boolean solved = _cplex.solve();
+        long end = System.currentTimeMillis();
+        _solveTime = end - start;
+
+        if (!solved) {
+            System.out.println("⚠️  Modelo 3D (multi-orientación) no tiene solución factible para el relleno.");
+            return;
+        }
+
+        System.out.println("Estado CPLEX (relleno): " + _cplex.getStatus());
+        System.out.println("Valor objetivo CPLEX (relleno): " + _cplex.getObjValue());
+    }
+
+    public double getSolveTime() {
+        return _solveTime;
+    }
+
+    public void end() {
+        if (_cplex != null)
+            _cplex.end();
     }
 }
