@@ -1,130 +1,198 @@
 package pack;
 
-import ilog.concert.*;
-import ilog.cplex.*;
+import java.util.ArrayList;
+
+import ilog.concert.IloException;
+import ilog.concert.IloNumExpr;
+import ilog.concert.IloNumVar;
+import ilog.cplex.IloCplex;
+import ilog.cplex.IloCplex.DoubleParam;
+import pack.Box.Orientation;
+import pack.Callback.Type;
 
 public class CompleteModel {
-
     private Instance _instance;
-    private Discretization _disc;
-    public IloCplex _cplex;
-    private IloNumVar[][][][] _x; // x[i][j][k][o] = 1 si hay caja en (i,j,k) con orientación o
-    private double _solveTime;
-    private boolean[][][] _occupiedInput;
+    private Discretization _discretization;
+    public IloCplex _cplex;  // público solo para lectura desde LayerHeuristic
+    private ArrayList<Callback> _callbacks;
 
-    public CompleteModel(Instance instance, Discretization disc, boolean[][][] occupied) {
+    private IloNumVar[][][][] _x;
+    private Box[][][][] _box;
+    private Box.Orientation[] _orientations;
+
+    private boolean _verbose = false;
+
+    public CompleteModel(Instance instance, Discretization discretization) {
         _instance = instance;
-        _disc = disc;
-        _occupiedInput = occupied;
+        _discretization = discretization;
+        _orientations = Box.Orientation.values();
+        _callbacks = new ArrayList<Callback>();
     }
 
-    public void solve() throws IloException {
-        _cplex = new IloCplex();
-        int I = _disc.sizeI();
-        int J = _disc.sizeJ();
-        int K = _disc.sizeK();
-        Box.Orientation[] orientations = Box.Orientation.values();
+    // === SOLUCIÓN PRINCIPAL ===
+    public void solve() {
+        try {
+            // ====== PRIMERA FASE: RELAJACIÓN LINEAL ======
+            _cplex = new IloCplex();
+            if (!_verbose) _cplex.setOut(null);
 
-        // === Variables ===
-        _x = new IloNumVar[I][J][K][orientations.length];
-        for (int i = 0; i < I; i++)
-            for (int j = 0; j < J; j++)
-                for (int k = 0; k < K; k++)
-                    for (int o = 0; o < orientations.length; o++)
-                        _x[i][j][k][o] = _cplex.boolVar("x_" + i + "_" + j + "_" + k + "_" + orientations[o]);
+            createVariablesRelaxed();
+            createObjective();
+            createIndependenceConstraints();
+            createStabilityConstraints();
+            _cplex.solve();
 
-        // === Restricciones: una sola orientación por celda ===
-        for (int i = 0; i < I; i++)
-            for (int j = 0; j < J; j++)
-                for (int k = 0; k < K; k++) {
-                    IloLinearNumExpr expr = _cplex.linearNumExpr();
-                    for (int o = 0; o < orientations.length; o++)
-                        expr.addTerm(1, _x[i][j][k][o]);
-                    _cplex.addLe(expr, 1, "OneOrient_" + i + "_" + j + "_" + k);
-                }
+            double eps = 1e-4;
+            int eliminadas = 0;
 
-        // === Restricciones: no colocar cajas fuera del contenedor o en celdas ocupadas ===
-        for (int i = 0; i < I; i++) {
-            for (int j = 0; j < J; j++) {
-                for (int k = 0; k < K; k++) {
-                    for (int o = 0; o < orientations.length; o++) {
-                        Box b = new Box(i, j, k, orientations[o]);
-
-                        // Si la caja no cabe o está fuera, o la celda ya está ocupada, la variable se fija en 0
-                        if (!b.fits() || (_occupiedInput != null && _occupiedInput[i][j][k])) {
-                            _cplex.addEq(_x[i][j][k][o], 0);
-                        }
-                    }
+            for (int i = 0; i < _discretization.sizeI(); i++)
+            for (int j = 0; j < _discretization.sizeJ(); j++)
+            for (int k = 0; k < _discretization.sizeK(); k++)
+            for (int l = 0; l < _orientations.length; l++) {
+                if (_x[i][j][k][l] != null && _cplex.getValue(_x[i][j][k][l]) < eps) {
+                    removeVariable(i, j, k, _orientations[l]);
+                    eliminadas++;
                 }
             }
-        }
+            System.out.println("Cantidad de variables eliminadas tras la relajación lineal: " + eliminadas);
 
-        // === Restricciones de no solapamiento ===
-        for (int i1 = 0; i1 < I; i1++) {
-            for (int j1 = 0; j1 < J; j1++) {
-                for (int k1 = 0; k1 < K; k1++) {
-                    for (int o1 = 0; o1 < orientations.length; o1++) {
-                        Box b1 = new Box(i1, j1, k1, orientations[o1]);
-                        if (!b1.fits()) continue;
-
-                        for (int i2 = 0; i2 < I; i2++) {
-                            for (int j2 = 0; j2 < J; j2++) {
-                                for (int k2 = 0; k2 < K; k2++) {
-                                    for (int o2 = 0; o2 < orientations.length; o2++) {
-                                        if (i1 == i2 && j1 == j2 && k1 == k2 && o1 == o2) continue;
-                                        Box b2 = new Box(i2, j2, k2, orientations[o2]);
-                                        if (!b2.fits()) continue;
-
-                                        boolean overlapX = !(b1.getx() + b1.getLength() <= b2.getx() || b2.getx() + b2.getLength() <= b1.getx());
-                                        boolean overlapY = !(b1.gety() + b1.getWidth() <= b2.gety() || b2.gety() + b2.getWidth() <= b1.gety());
-                                        boolean overlapZ = !(b1.getz() + b1.getHeight() <= b2.getz() || b2.getz() + b2.getHeight() <= b1.getz());
-
-                                        if (overlapX && overlapY && overlapZ) {
-                                            IloLinearNumExpr expr = _cplex.linearNumExpr();
-                                            expr.addTerm(1, _x[i1][j1][k1][o1]);
-                                            expr.addTerm(1, _x[i2][j2][k2][o2]);
-                                            _cplex.addLe(expr, 1);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // === Función objetivo: maximizar cajas colocadas ===
-        IloLinearNumExpr obj = _cplex.linearNumExpr();
-        for (int i = 0; i < I; i++)
-            for (int j = 0; j < J; j++)
-                for (int k = 0; k < K; k++)
-                    for (int o = 0; o < orientations.length; o++)
-                        obj.addTerm(1, _x[i][j][k][o]);
-        _cplex.addMaximize(obj);
-
-        // === Resolver ===
-        _cplex.setOut(null);
-        long start = System.currentTimeMillis();
-        boolean solved = _cplex.solve();
-        long end = System.currentTimeMillis();
-        _solveTime = end - start;
-
-        if (!solved) {
-            System.out.println("⚠️  Modelo 3D (multi-orientación) no tiene solución factible para el relleno.");
-            return;
-        }
-
-        System.out.println("Estado CPLEX (relleno): " + _cplex.getStatus());
-        System.out.println("Valor objetivo CPLEX (relleno): " + _cplex.getObjValue());
-    }
-
-    public double getSolveTime() {
-        return _solveTime;
-    }
-
-    public void end() {
-        if (_cplex != null)
+            // ====== SEGUNDA FASE: MODELO ENTERO REDUCIDO ======
             _cplex.end();
+            _cplex = new IloCplex();
+            if (!_verbose) _cplex.setOut(null);
+
+            createVariables();
+            createObjective();
+            createIndependenceConstraints();
+            createStabilityConstraints();
+
+            long start = System.nanoTime();
+            solveModel();
+            long end = System.nanoTime();
+
+            double tiempoTotal = (end - start) / 1_000_000.0;
+            System.out.println("Tiempo de resolución (segunda pasada) = " + (tiempoTotal / 1000.0) + " segundos");
+
+            _cplex.end();
+        } catch (IloException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // === CREACIÓN DE VARIABLES ===
+    protected void createVariables() throws IloException {
+        _x = new IloNumVar[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length];
+        _box = new Box[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length];
+
+        for (int i = 0; i < _discretization.sizeI(); i++)
+        for (int j = 0; j < _discretization.sizeJ(); j++)
+        for (int k = 0; k < _discretization.sizeK(); k++)
+        for (int l = 0; l < _orientations.length; l++) {
+            Box b = new Box(i, j, k, _orientations[l]);
+            if (b.fits()) {
+                _x[i][j][k][l] = _cplex.boolVar("x" + i + "_" + j + "_" + k + "_" + _orientations[l]);
+                _box[i][j][k][l] = b;
+            }
+        }
+        notify(Type.VariablesCreated);
+    }
+
+    protected void createVariablesRelaxed() throws IloException {
+        _x = new IloNumVar[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length];
+        _box = new Box[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length];
+
+        for (int i = 0; i < _discretization.sizeI(); i++)
+        for (int j = 0; j < _discretization.sizeJ(); j++)
+        for (int k = 0; k < _discretization.sizeK(); k++)
+        for (int l = 0; l < _orientations.length; l++) {
+            Box b = new Box(i, j, k, _orientations[l]);
+            if (b.fits()) {
+                _x[i][j][k][l] = _cplex.numVar(0.0, 1.0, "x" + i + "_" + j + "_" + k + "_" + _orientations[l]);
+                _box[i][j][k][l] = b;
+            }
+        }
+        notify(Type.VariablesCreated);
+    }
+
+    // === OBJETIVO ===
+    protected void createObjective() throws IloException {
+        IloNumExpr fobj = _cplex.linearNumExpr();
+        for (int i = 0; i < _discretization.sizeI(); i++)
+        for (int j = 0; j < _discretization.sizeJ(); j++)
+        for (int k = 0; k < _discretization.sizeK(); k++)
+        for (int l = 0; l < _orientations.length; l++) {
+            if (_x[i][j][k][l] != null) fobj = _cplex.sum(fobj, _x[i][j][k][l]);
+        }
+        _cplex.addMaximize(fobj);
+        notify(Type.ObjectiveCreated);
+    }
+
+    // === RESTRICCIONES ===
+    protected void createIndependenceConstraints() throws IloException {
+        for (int i = 0; i < _discretization.sizeI(); i++)
+        for (int j = 0; j < _discretization.sizeJ(); j++)
+        for (int k = 0; k < _discretization.sizeK(); k++) {
+            IloNumExpr lhs = _cplex.linearNumExpr();
+
+            for (int ip = 0; ip < _discretization.sizeI(); ip++)
+            for (int jp = 0; jp < _discretization.sizeJ(); jp++)
+            for (int kp = 0; kp < _discretization.sizeK(); kp++)
+            for (int lp = 0; lp < _orientations.length; lp++) {
+                if (_box[ip][jp][kp][lp] != null && _box[ip][jp][kp][lp].contains(i, j, k))
+                    lhs = _cplex.sum(lhs, _x[ip][jp][kp][lp]);
+            }
+            _cplex.addLe(lhs, 1, "ind_" + i + "_" + j + "_" + k);
+        }
+    }
+
+    protected void createStabilityConstraints() throws IloException {
+        for (int i = 0; i < _discretization.sizeI(); i++)
+        for (int j = 0; j < _discretization.sizeJ(); j++)
+        for (int k = 1; k < _discretization.sizeK(); k++)
+        for (int l = 0; l < _orientations.length; l++) {
+            if (_x[i][j][k][l] == null) continue;
+
+            IloNumExpr lhs = _cplex.linearNumExpr();
+            lhs = _cplex.sum(lhs, _cplex.prod(_instance.getStabilityThreshold() * _box[i][j][k][l].floorSurface(), _x[i][j][k][l]));
+
+            for (int ip = 0; ip < _discretization.sizeI(); ip++)
+            for (int jp = 0; jp < _discretization.sizeJ(); jp++)
+            for (int kp = 0; kp < _discretization.sizeK(); kp++)
+            for (int lp = 0; lp < _orientations.length; lp++) {
+                if (_box[ip][jp][kp][lp] != null && _box[ip][jp][kp][lp].getTop() == _box[i][j][k][l].getz()) {
+                    lhs = _cplex.sum(lhs,
+                            _cplex.prod(-_box[i][j][k][l].intersectionSurface(_box[ip][jp][kp][lp]), _x[ip][jp][kp][lp]));
+                }
+            }
+            _cplex.addLe(lhs, 0, "stab_" + i + "_" + j + "_" + k + "_" + l);
+        }
+        notify(Type.ConstraintsCreated);
+    }
+
+    // === SOLUCIÓN FINAL ===
+    protected void solveModel() throws IloException {
+        _cplex.setParam(DoubleParam.TimeLimit, 600);
+        _cplex.solve();
+
+        System.out.println(_cplex.getStatus());
+        if (_cplex.getStatus() == IloCplex.Status.Optimal || _cplex.getStatus() == IloCplex.Status.Feasible) {
+            System.out.println("Obj value = " + _cplex.getObjValue());
+        }
+        notify(Type.ModelSolved);
+    }
+
+    // === AUX ===
+    public void register(Callback cb) { _callbacks.add(cb); }
+
+    public void notify(Callback.Type t) {
+        for (Callback c : _callbacks) c.notify(t);
+    }
+
+    public void removeVariable(int i, int j, int k, Orientation o) {
+        for (int lp = 0; lp < _orientations.length; lp++)
+            if (_orientations[lp] == o) {
+                _x[i][j][k][lp] = null;
+                _box[i][j][k][lp] = null;
+            }
     }
 }
