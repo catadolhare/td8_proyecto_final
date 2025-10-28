@@ -1,130 +1,102 @@
 package pack;
 
-import ilog.concert.IloException;
+import java.util.ArrayList;
+import java.util.List;
 
 public class LayerHeuristic {
 
+    // === NUEVO: almacenar últimos resultados ===
+    private static int _lastBaseBoxes = 0;
+    private static int _lastResidualBoxes = 0;
+    private static int _lastTotalBoxes = 0;
+    private static double _lastTotalTimeMs = 0.0;
+
     public static void run(Instance instance) {
-        try {
-            Discretization disc = new Discretization(instance);
+        Discretization disc = new Discretization(instance);
 
-            int bestTotal = 0;
-            Box.Orientation bestOrientation = null;
-            int bestBoxesPerLayer = 0;
-            int bestLayers = 0;
-            double bestTime = 0.0;
-            int best3DFillBoxes = 0;
+        int bestTotal = 0;
+        Box.Orientation bestOrientation = null;
+        int bestBoxesPerLayer = 0;
+        int bestLayers = 0;
+        double bestTime = 0.0; // ms de resolver la capa (1 solve)
 
-            System.out.println("=== Heurística por Capas (PLE con relleno 3D) ===");
-            System.out.printf("Contenedor: L=%d, W=%d, H=%d%n", instance.getL(), instance.getW(), instance.getH());
-            System.out.printf("Discretización: I=%d, J=%d, K=%d%n", disc.sizeI(), disc.sizeJ(), disc.sizeK());
+        System.out.println("=== Heurística por Capas (versión simplificada) ===");
+        System.out.println("Contenedor: L=" + instance.getL() + " W=" + instance.getW() + " H=" + instance.getH());
+        System.out.println();
 
-            // ==== FASE 1: capas 2D ====
-            for (Box.Orientation o : Box.Orientation.values()) {
-                Box sample = new Box(0, 0, 0, o);
-                int layerHeight = sample.getHeight();
-                if (layerHeight > instance.getH()) continue;
+        for (Box.Orientation o : Box.Orientation.values()) {
+            Box sample = new Box(0, 0, 0, o);
+            int layerHeight = sample.getHeight();
+            int layers = instance.getH() / layerHeight;
 
-                int layers = instance.getH() / layerHeight;
-                if (layers == 0) continue;
+            CompleteModel2D model = new CompleteModel2D(instance, disc, o, 0);
+            model.solve();
 
-                CompleteModel2D model2D = new CompleteModel2D(instance, disc, o, 0);
-                model2D.solve();
+            int boxesInLayer = model.getSolutionCount();
+            double solveTime = model.getSolveTime(); // ms
 
-                int boxesInLayer = model2D.getSolutionCount();
-                double solveTime = model2D.getSolveTime();
-                int totalBoxes = boxesInLayer * layers;
+            int totalBoxes = boxesInLayer * layers;
 
-                System.out.printf("Orientación %-10s → %3d cajas/capa × %2d capas = %3d cajas totales%n",
-                        o, boxesInLayer, layers, totalBoxes);
+            System.out.printf(
+                "Orientación %-10s → %3d cajas por capa × %2d capas = %3d cajas totales\n",
+                o.toString(), boxesInLayer, layers, totalBoxes
+            );
 
-                if (totalBoxes > bestTotal) {
-                    bestTotal = totalBoxes;
-                    bestOrientation = o;
-                    bestBoxesPerLayer = boxesInLayer;
-                    bestLayers = layers;
-                    bestTime = solveTime;
-                }
+            if (totalBoxes > bestTotal) {
+                bestTotal = totalBoxes;
+                bestOrientation = o;
+                bestBoxesPerLayer = boxesInLayer;
+                bestLayers = layers;
+                bestTime = solveTime; // guardamos el tiempo de la mejor orientación
             }
+        }
 
-            System.out.println("\n=== Resultado Fase 1 (capas 2D) ===");
-            System.out.println("Mejor orientación: " + bestOrientation);
-            System.out.println("Cajas por capa: " + bestBoxesPerLayer);
-            System.out.println("Cantidad de capas: " + bestLayers);
-            System.out.println("Total de cajas (capas): " + bestTotal);
-            System.out.printf("Tiempo total (1 capa): %.2f segundos%n", bestTime / 1000.0);
+        System.out.println("\n=== Resultado Final ===");
+        System.out.println("Mejor orientación: " + bestOrientation);
+        System.out.println("Cajas por capa: " + bestBoxesPerLayer);
+        System.out.println("Cantidad de capas: " + bestLayers);
+        System.out.println("Total de cajas en el contenedor: " + bestTotal);
+        System.out.printf("Tiempo total de resolución (1 capa): %.2f segundos\n", bestTime / 1000.0);
 
-            // ==== FASE 2: Relleno 3D ====
-            System.out.println("\n=== Fase 2: Construyendo matriz de ocupación ===");
+        // === FASE DE RELLENO 3D ===
+        System.out.println("\n=== Fase de Relleno (espacios vacíos) ===");
+        CompleteModel2D bestModel = new CompleteModel2D(instance, disc, bestOrientation, 0);
+        bestModel.solve();
+        List<Box> baseLayer = bestModel.getSelectedBoxes();
 
-            boolean[][][] occupied = buildOccupiedMatrix(bestOrientation, bestLayers, disc, instance);
-            double freeRatio = computeFreeRatio(occupied, disc);
-            System.out.printf("Celdas ocupadas: %d / %d (%.2f%%)%n",
-                    countOccupied(occupied), disc.sizeI() * disc.sizeJ() * disc.sizeK(),
-                    (1 - freeRatio) * 100);
-            System.out.printf("Volumen libre restante: %.2f%% del contenedor%n", freeRatio * 100);
-
-            System.out.println("Resolviendo modelo de relleno 3D...");
-            CompleteModel fill3D = new CompleteModel(instance, disc);
-            fill3D.solve();
-
-            int fillBoxes = 0;
-            try {
-                if (fill3D._cplex != null) {
-                    fillBoxes = (int) Math.round(fill3D._cplex.getObjValue());
-                    System.out.println("Cajas adicionales (relleno 3D): " + fillBoxes);
-                    System.out.println("Total final de cajas: " + (bestTotal + fillBoxes));
-                }
-            } catch (IloException e) {
-                System.out.println("⚠️ Error al leer resultado del modelo de relleno.");
+        List<Box> fixed = new ArrayList<>();
+        for (int zLayer = 0; zLayer < bestLayers; zLayer++) {
+            for (Box b0 : baseLayer) {
+                Box b = new Box(b0.geti(), b0.getj(), b0.getk() + zLayer, b0.getOrientation());
+                fixed.add(b);
             }
-
-            bestTotal += fillBoxes;
-            best3DFillBoxes = fillBoxes;
-
-            // ==== RESUMEN ====
-            System.out.println("\n=== RESUMEN FINAL ===");
-            System.out.println("Mejor orientación: " + bestOrientation);
-            System.out.println("Cajas por capa: " + bestBoxesPerLayer);
-            System.out.println("Cantidad de capas: " + bestLayers);
-            System.out.println("Cajas 3D adicionales: " + best3DFillBoxes);
-            System.out.println("Total final de cajas: " + bestTotal);
-
-        } catch (Exception e) {
-            System.err.println("❌ Error durante la ejecución de la heurística:");
-            e.printStackTrace();
         }
+
+        CompleteModel residual = new CompleteModel(instance, disc, fixed);
+        residual.solve();
+
+        // === ACUMULAR Y GUARDAR ===
+        int baseBoxes = bestBoxesPerLayer * bestLayers;
+        int residualBoxes = residual.getPackedCount();
+        int totalBoxes = baseBoxes + residualBoxes;
+
+        double totalTimeMs = bestTime + residual.getSolveTimeMs();
+
+        _lastBaseBoxes = baseBoxes;
+        _lastResidualBoxes = residualBoxes;
+        _lastTotalBoxes = totalBoxes;
+        _lastTotalTimeMs = totalTimeMs;
+
+        System.out.println("\n=== Totales Acumulados ===");
+        System.out.println("Cajas por capas: " + baseBoxes);
+        System.out.println("Cajas de relleno: " + residualBoxes);
+        System.out.println("TOTAL cajas: " + totalBoxes);
+        System.out.printf("Tiempo total: %.2f s\n", totalTimeMs / 1000.0);
     }
 
-    // ======== helpers ========
-    private static boolean[][][] buildOccupiedMatrix(Box.Orientation orientation, int layers,
-                                                     Discretization disc, Instance instance) {
-        boolean[][][] occupied = new boolean[disc.sizeI()][disc.sizeJ()][disc.sizeK()];
-        Box sample = new Box(0, 0, 0, orientation);
-        int layerHeight = sample.getHeight();
-        int usedHeight = layers * layerHeight;
-
-        for (int i = 0; i < disc.sizeI(); i++)
-        for (int j = 0; j < disc.sizeJ(); j++)
-        for (int k = 0; k < disc.sizeK(); k++) {
-            int z = disc.getz(k);
-            if (z < usedHeight) occupied[i][j][k] = true;
-        }
-        return occupied;
-    }
-
-    private static double computeFreeRatio(boolean[][][] occ, Discretization disc) {
-        int total = disc.sizeI() * disc.sizeJ() * disc.sizeK();
-        int used = countOccupied(occ);
-        return (double) (total - used) / total;
-    }
-
-    private static int countOccupied(boolean[][][] occ) {
-        int count = 0;
-        for (int i = 0; i < occ.length; i++)
-            for (int j = 0; j < occ[0].length; j++)
-                for (int k = 0; k < occ[0][0].length; k++)
-                    if (occ[i][j][k]) count++;
-        return count;
-    }
+    // Getters para leer desde afuera si lo necesitás
+    public static int getLastBaseBoxes() { return _lastBaseBoxes; }
+    public static int getLastResidualBoxes() { return _lastResidualBoxes; }
+    public static int getLastTotalBoxes() { return _lastTotalBoxes; }
+    public static double getLastTotalTimeMs() { return _lastTotalTimeMs; }
 }

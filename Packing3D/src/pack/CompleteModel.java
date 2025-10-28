@@ -1,6 +1,7 @@
 package pack;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import ilog.concert.IloException;
 import ilog.concert.IloNumExpr;
@@ -11,9 +12,10 @@ import pack.Box.Orientation;
 import pack.Callback.Type;
 
 public class CompleteModel {
+
     private Instance _instance;
     private Discretization _discretization;
-    public IloCplex _cplex;  // público solo para lectura desde LayerHeuristic
+    private IloCplex _cplex;
     private ArrayList<Callback> _callbacks;
 
     private IloNumVar[][][][] _x;
@@ -22,6 +24,13 @@ public class CompleteModel {
 
     private boolean _verbose = false;
 
+    // cajas fijas (replicadas desde la fase por capas)
+    private List<Box> _fixedBoxes = List.of();
+
+    // === NUEVO: métricas del relleno ===
+    private int _packedCount = 0;      // # de cajas colocadas en la fase de relleno
+    private double _solveTimeMs = 0.0; // tiempo de resolución en ms
+
     public CompleteModel(Instance instance, Discretization discretization) {
         _instance = instance;
         _discretization = discretization;
@@ -29,49 +38,25 @@ public class CompleteModel {
         _callbacks = new ArrayList<Callback>();
     }
 
-    // === SOLUCIÓN PRINCIPAL ===
+    // constructor para relleno
+    public CompleteModel(Instance instance, Discretization discretization, List<Box> fixedBoxes) {
+        this(instance, discretization);
+        if (fixedBoxes != null)
+            _fixedBoxes = fixedBoxes;
+    }
+
     public void solve() {
         try {
-            // ====== PRIMERA FASE: RELAJACIÓN LINEAL ======
             _cplex = new IloCplex();
-            if (!_verbose) _cplex.setOut(null);
 
-            createVariablesRelaxed();
-            createObjective();
-            createIndependenceConstraints();
-            createStabilityConstraints();
-            _cplex.solve();
-
-            double eps = 1e-4;
-            int eliminadas = 0;
-
-            for (int i = 0; i < _discretization.sizeI(); i++)
-            for (int j = 0; j < _discretization.sizeJ(); j++)
-            for (int k = 0; k < _discretization.sizeK(); k++)
-            for (int l = 0; l < _orientations.length; l++) {
-                if (_x[i][j][k][l] != null && _cplex.getValue(_x[i][j][k][l]) < eps) {
-                    removeVariable(i, j, k, _orientations[l]);
-                    eliminadas++;
-                }
-            }
-            System.out.println("Cantidad de variables eliminadas tras la relajación lineal: " + eliminadas);
-
-            // ====== SEGUNDA FASE: MODELO ENTERO REDUCIDO ======
-            _cplex.end();
-            _cplex = new IloCplex();
-            if (!_verbose) _cplex.setOut(null);
+            if (_verbose == false)
+                _cplex.setOut(null);
 
             createVariables();
             createObjective();
             createIndependenceConstraints();
             createStabilityConstraints();
-
-            long start = System.nanoTime();
             solveModel();
-            long end = System.nanoTime();
-
-            double tiempoTotal = (end - start) / 1_000_000.0;
-            System.out.println("Tiempo de resolución (segunda pasada) = " + (tiempoTotal / 1000.0) + " segundos");
 
             _cplex.end();
         } catch (IloException e) {
@@ -79,120 +64,138 @@ public class CompleteModel {
         }
     }
 
-    // === CREACIÓN DE VARIABLES ===
     protected void createVariables() throws IloException {
         _x = new IloNumVar[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length];
         _box = new Box[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length];
 
-        for (int i = 0; i < _discretization.sizeI(); i++)
-        for (int j = 0; j < _discretization.sizeJ(); j++)
-        for (int k = 0; k < _discretization.sizeK(); k++)
-        for (int l = 0; l < _orientations.length; l++) {
-            Box b = new Box(i, j, k, _orientations[l]);
-            if (b.fits()) {
-                _x[i][j][k][l] = _cplex.boolVar("x" + i + "_" + j + "_" + k + "_" + _orientations[l]);
-                _box[i][j][k][l] = b;
-            }
+        for (int i = 0; i < _discretization.sizeI(); ++i)
+        for (int j = 0; j < _discretization.sizeJ(); ++j)
+        for (int k = 0; k < _discretization.sizeK(); ++k)
+        for (int l = 0; l < _orientations.length; ++l) {
+            Box box = new Box(i, j, k, _orientations[l]);
+            if (!box.fits()) continue;
+
+            // no crear variables que se solapen con fijas
+            if (overlapsFixed(box)) continue;
+
+            _x[i][j][k][l] = _cplex.boolVar("x" + i + "" + j + "" + k + "" + _orientations[l]);
+            _box[i][j][k][l] = box;
         }
+
         notify(Type.VariablesCreated);
     }
 
-    protected void createVariablesRelaxed() throws IloException {
-        _x = new IloNumVar[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length];
-        _box = new Box[_discretization.sizeI()][_discretization.sizeJ()][_discretization.sizeK()][_orientations.length];
+    // solape con cajas fijas usando contains(...)
+    private boolean overlapsFixed(Box b) {
+        if (_fixedBoxes == null || _fixedBoxes.isEmpty()) return false;
 
-        for (int i = 0; i < _discretization.sizeI(); i++)
-        for (int j = 0; j < _discretization.sizeJ(); j++)
-        for (int k = 0; k < _discretization.sizeK(); k++)
-        for (int l = 0; l < _orientations.length; l++) {
-            Box b = new Box(i, j, k, _orientations[l]);
-            if (b.fits()) {
-                _x[i][j][k][l] = _cplex.numVar(0.0, 1.0, "x" + i + "_" + j + "_" + k + "_" + _orientations[l]);
-                _box[i][j][k][l] = b;
+        for (int i = 0; i < _discretization.sizeI(); ++i)
+        for (int j = 0; j < _discretization.sizeJ(); ++j)
+        for (int k = 0; k < _discretization.sizeK(); ++k) {
+            if (b.contains(i, j, k)) {
+                for (Box f : _fixedBoxes) {
+                    if (f.contains(i, j, k)) {
+                        return true; // comparten al menos una celda → solape
+                    }
+                }
             }
         }
-        notify(Type.VariablesCreated);
+        return false;
     }
 
-    // === OBJETIVO ===
     protected void createObjective() throws IloException {
-        IloNumExpr fobj = _cplex.linearNumExpr();
-        for (int i = 0; i < _discretization.sizeI(); i++)
-        for (int j = 0; j < _discretization.sizeJ(); j++)
-        for (int k = 0; k < _discretization.sizeK(); k++)
-        for (int l = 0; l < _orientations.length; l++) {
-            if (_x[i][j][k][l] != null) fobj = _cplex.sum(fobj, _x[i][j][k][l]);
-        }
+        IloNumExpr fobj = _cplex.linearIntExpr();
+
+        for (int i = 0; i < _discretization.sizeI(); ++i)
+        for (int j = 0; j < _discretization.sizeJ(); ++j)
+        for (int k = 0; k < _discretization.sizeK(); ++k)
+        for (int l = 0; l < _orientations.length; ++l)
+            if (_x[i][j][k][l] != null)
+                fobj = _cplex.sum(fobj, _x[i][j][k][l]);
+
         _cplex.addMaximize(fobj);
         notify(Type.ObjectiveCreated);
     }
 
-    // === RESTRICCIONES ===
     protected void createIndependenceConstraints() throws IloException {
-        for (int i = 0; i < _discretization.sizeI(); i++)
-        for (int j = 0; j < _discretization.sizeJ(); j++)
-        for (int k = 0; k < _discretization.sizeK(); k++) {
-            IloNumExpr lhs = _cplex.linearNumExpr();
+        for (int i = 0; i < _discretization.sizeI(); ++i)
+        for (int j = 0; j < _discretization.sizeJ(); ++j)
+        for (int k = 0; k < _discretization.sizeK(); ++k) {
+            IloNumExpr lhs = _cplex.linearIntExpr();
 
-            for (int ip = 0; ip < _discretization.sizeI(); ip++)
-            for (int jp = 0; jp < _discretization.sizeJ(); jp++)
-            for (int kp = 0; kp < _discretization.sizeK(); kp++)
-            for (int lp = 0; lp < _orientations.length; lp++) {
+            for (int ip = 0; ip < _discretization.sizeI(); ++ip)
+            for (int jp = 0; jp < _discretization.sizeJ(); ++jp)
+            for (int kp = 0; kp < _discretization.sizeK(); ++kp)
+            for (int lp = 0; lp < _orientations.length; ++lp)
                 if (_box[ip][jp][kp][lp] != null && _box[ip][jp][kp][lp].contains(i, j, k))
                     lhs = _cplex.sum(lhs, _x[ip][jp][kp][lp]);
-            }
-            _cplex.addLe(lhs, 1, "ind_" + i + "_" + j + "_" + k);
+
+            _cplex.addLe(lhs, 1, "ind" + i + "" + j + "" + k);
         }
     }
 
     protected void createStabilityConstraints() throws IloException {
-        for (int i = 0; i < _discretization.sizeI(); i++)
-        for (int j = 0; j < _discretization.sizeJ(); j++)
-        for (int k = 1; k < _discretization.sizeK(); k++)
-        for (int l = 0; l < _orientations.length; l++) {
-            if (_x[i][j][k][l] == null) continue;
+        for (int i = 0; i < _discretization.sizeI(); ++i)
+        for (int j = 0; j < _discretization.sizeJ(); ++j)
+        for (int k = 1; k < _discretization.sizeK(); ++k)
+        for (int l = 0; l < _orientations.length; ++l)
+            if (_x[i][j][k][l] != null) {
+                IloNumExpr lhs = _cplex.linearIntExpr();
+                lhs = _cplex.sum(lhs, _cplex.prod(
+                        _instance.getStabilityThreshold() * _box[i][j][k][l].floorSurface(),
+                        _x[i][j][k][l]));
 
-            IloNumExpr lhs = _cplex.linearNumExpr();
-            lhs = _cplex.sum(lhs, _cplex.prod(_instance.getStabilityThreshold() * _box[i][j][k][l].floorSurface(), _x[i][j][k][l]));
+                // soporte por variables de decisión
+                for (int ip = 0; ip < _discretization.sizeI(); ++ip)
+                for (int jp = 0; jp < _discretization.sizeJ(); ++jp)
+                for (int kp = 0; kp < _discretization.sizeK(); ++kp)
+                for (int lp = 0; lp < _orientations.length; ++lp)
+                    if (_box[ip][jp][kp][lp] != null &&
+                        _box[ip][jp][kp][lp].getTop() == _box[i][j][k][l].getz())
+                        lhs = _cplex.sum(lhs,
+                                _cplex.prod(-_box[i][j][k][l].intersectionSurface(_box[ip][jp][kp][lp]),
+                                        _x[ip][jp][kp][lp]));
 
-            for (int ip = 0; ip < _discretization.sizeI(); ip++)
-            for (int jp = 0; jp < _discretization.sizeJ(); jp++)
-            for (int kp = 0; kp < _discretization.sizeK(); kp++)
-            for (int lp = 0; lp < _orientations.length; lp++) {
-                if (_box[ip][jp][kp][lp] != null && _box[ip][jp][kp][lp].getTop() == _box[i][j][k][l].getz()) {
-                    lhs = _cplex.sum(lhs,
-                            _cplex.prod(-_box[i][j][k][l].intersectionSurface(_box[ip][jp][kp][lp]), _x[ip][jp][kp][lp]));
-                }
+                // soporte de cajas fijas (constante)
+                for (Box f : _fixedBoxes)
+                    if (f.getTop() == _box[i][j][k][l].getz()) {
+                        double inter = _box[i][j][k][l].intersectionSurface(f);
+                        if (inter > 0)
+                            lhs = _cplex.sum(lhs, -inter);
+                    }
+
+                _cplex.addLe(lhs, 0, "stab" + i + "" + j + "" + k + "" + l);
             }
-            _cplex.addLe(lhs, 0, "stab_" + i + "_" + j + "_" + k + "_" + l);
-        }
+
         notify(Type.ConstraintsCreated);
     }
 
-    // === SOLUCIÓN FINAL ===
     protected void solveModel() throws IloException {
-        _cplex.setParam(DoubleParam.TimeLimit, 600);
-        _cplex.solve();
+        _cplex.setParam(DoubleParam.TimeLimit, 60);
 
-        System.out.println(_cplex.getStatus());
+        long t0 = System.nanoTime();
+        _cplex.solve();
+        long t1 = System.nanoTime();
+        _solveTimeMs = (t1 - t0) / 1_000_000.0;
+
         if (_cplex.getStatus() == IloCplex.Status.Optimal || _cplex.getStatus() == IloCplex.Status.Feasible) {
-            System.out.println("Obj value = " + _cplex.getObjValue());
+            _packedCount = (int)Math.round(_cplex.getObjValue()); // la FO es suma de x ⇒ #cajas
+            System.out.println("Obj value (relleno): " + _packedCount);
         }
+
         notify(Type.ModelSolved);
     }
 
-    // === AUX ===
-    public void register(Callback cb) { _callbacks.add(cb); }
-
-    public void notify(Callback.Type t) {
-        for (Callback c : _callbacks) c.notify(t);
+    public void register(Callback callback) {
+        _callbacks.add(callback);
     }
 
-    public void removeVariable(int i, int j, int k, Orientation o) {
-        for (int lp = 0; lp < _orientations.length; lp++)
-            if (_orientations[lp] == o) {
-                _x[i][j][k][lp] = null;
-                _box[i][j][k][lp] = null;
-            }
+    public void notify(Callback.Type type) {
+        for (Callback c : _callbacks)
+            c.notify(type);
     }
+
+    // === NUEVO: getters para métricas del relleno ===
+    public int getPackedCount() { return _packedCount; }
+    public double getSolveTimeMs() { return _solveTimeMs; }
 }

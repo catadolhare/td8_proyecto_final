@@ -1,64 +1,120 @@
 package pack;
 
-import ilog.concert.IloException;
-import ilog.concert.IloNumExpr;
-import ilog.concert.IloNumVar;
+import ilog.concert.*;
 import ilog.cplex.IloCplex;
-import pack.Box.Orientation;
+import ilog.cplex.IloCplex.DoubleParam;
+import java.util.ArrayList;
+import java.util.List;
 
 public class CompleteModel2D {
+
     private Instance _instance;
     private Discretization _discretization;
     private IloCplex _cplex;
-    private Orientation _orientation;
-    private int _layerIndex;
-    private int _solutionCount = 0;
-    private double _solveTime = 0;
+    private Box.Orientation _orientation;
+    private int _fixedLayer;  // índice de la capa (k)
 
-    public CompleteModel2D(Instance inst, Discretization disc, Orientation orientation, int layerIndex) {
-        _instance = inst;
-        _discretization = disc;
+    private IloNumVar[][] _x;
+    private Box[][] _box;
+
+    private boolean _verbose = false;
+    private int _solutionCount = 0;
+    private double _solveTime = 0.0;
+
+    // NUEVO: guardar las cajas seleccionadas
+    private final List<Box> _selected = new ArrayList<>();
+
+    public CompleteModel2D(Instance instance, Discretization discretization,
+                           Box.Orientation orientation, int layer) {
+        _instance = instance;
+        _discretization = discretization;
         _orientation = orientation;
-        _layerIndex = layerIndex;
+        _fixedLayer = layer;
     }
 
     public void solve() {
         try {
             _cplex = new IloCplex();
-            _cplex.setOut(null);
+            if (!_verbose)
+                _cplex.setOut(null);
 
-            // variables bin
-            int I = _discretization.sizeI();
-            int J = _discretization.sizeJ();
-            IloNumVar[][] x = new IloNumVar[I][J];
+            createVariables();
+            createObjective();
+            createIndependenceConstraints();
 
-            for (int i = 0; i < I; i++)
-                for (int j = 0; j < J; j++)
-                    x[i][j] = _cplex.boolVar("x_" + i + "_" + j);
+            _cplex.setParam(DoubleParam.TimeLimit, 30);
 
-            // objetivo
-            IloNumExpr fobj = _cplex.linearNumExpr();
-            for (int i = 0; i < I; i++)
-                for (int j = 0; j < J; j++)
-                    fobj = _cplex.sum(fobj, x[i][j]);
-            _cplex.addMaximize(fobj);
-
-            long start = System.nanoTime();
+            long start_time = System.nanoTime();
             _cplex.solve();
-            long end = System.nanoTime();
+            long end_time = System.nanoTime();
+            _solveTime = (end_time - start_time) / 1_000_000.0;
 
-            if (_cplex.getStatus() == IloCplex.Status.Optimal || _cplex.getStatus() == IloCplex.Status.Feasible) {
-                _solutionCount = (int) Math.round(_cplex.getObjValue());
+            if (_cplex.getStatus() == IloCplex.Status.Optimal ||
+                _cplex.getStatus() == IloCplex.Status.Feasible) {
+
+                for (int i = 0; i < _discretization.sizeI(); i++)
+                for (int j = 0; j < _discretization.sizeJ(); j++)
+                    if (_x[i][j] != null && _cplex.getValue(_x[i][j]) > 0.5) {
+                        _solutionCount++;
+                        _selected.add(_box[i][j]); // guardar la caja seleccionada
+                    }
             }
 
-            _solveTime = (end - start) / 1_000_000.0;
             _cplex.end();
-
         } catch (IloException e) {
             e.printStackTrace();
         }
     }
 
-    public int getSolutionCount() { return _solutionCount; }
-    public double getSolveTime() { return _solveTime; }
+    protected void createVariables() throws IloException {
+        _x = new IloNumVar[_discretization.sizeI()][_discretization.sizeJ()];
+        _box = new Box[_discretization.sizeI()][_discretization.sizeJ()];
+
+        int k = _fixedLayer;
+
+        for (int i = 0; i < _discretization.sizeI(); i++)
+        for (int j = 0; j < _discretization.sizeJ(); j++) {
+            Box b = new Box(i, j, k, _orientation);
+            if (b.fits()) {
+                _x[i][j] = _cplex.boolVar("x" + i + "" + j + "" + k); // corregido _x
+                _box[i][j] = b;
+            }
+        }
+    }
+
+    protected void createObjective() throws IloException {
+        IloNumExpr expr = _cplex.linearIntExpr();
+        for (int i = 0; i < _discretization.sizeI(); i++)
+        for (int j = 0; j < _discretization.sizeJ(); j++)
+            if (_x[i][j] != null)
+                expr = _cplex.sum(expr, _x[i][j]);
+        _cplex.addMaximize(expr);
+    }
+
+    protected void createIndependenceConstraints() throws IloException {
+        for (int i = 0; i < _discretization.sizeI(); i++)
+        for (int j = 0; j < _discretization.sizeJ(); j++) {
+            IloNumExpr lhs = _cplex.linearIntExpr();
+
+            for (int ip = 0; ip < _discretization.sizeI(); ip++)
+            for (int jp = 0; jp < _discretization.sizeJ(); jp++)
+                if (_box[ip][jp] != null && _box[ip][jp].contains(i, j, _fixedLayer))
+                    lhs = _cplex.sum(lhs, _x[ip][jp]);
+
+            _cplex.addLe(lhs, 1);
+        }
+    }
+
+    public int getSolutionCount() {
+        return _solutionCount;
+    }
+
+    public double getSolveTime() {
+        return _solveTime;
+    }
+
+    // NUEVO: devolver las cajas seleccionadas
+    public List<Box> getSelectedBoxes() {
+        return _selected;
+    }
 }
