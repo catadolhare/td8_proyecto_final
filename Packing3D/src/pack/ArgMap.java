@@ -1,4 +1,4 @@
-package console;
+package pack;
 
 public class ArgMap
 {
