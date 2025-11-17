@@ -31,16 +31,10 @@ public class EntryPoint {
         Discretization discretization = new Discretization(instance);
         Box.initialize(instance, discretization);
 
-        // === Ejecutar la heurística completa ===
-        long startTime = System.nanoTime();
+        // === Ejecutar la heurística completa (ella mide su propio tiempo) ===
         LayerHeuristic.run(instance);
-        long endTime = System.nanoTime();
 
-        double totalSeconds = (endTime - startTime) / 1_000_000_000.0;
-
-        System.out.printf("\n=== EJECUCIÓN FINALIZADA ===\n");
-        System.out.printf("⏱️  Tiempo total: %.2f segundos (%.2f minutos)\n", totalSeconds, totalSeconds / 60.0);
-        System.out.println("=====================================");
+        System.out.println("\n=== EJECUCIÓN FINALIZADA ===");
     }
 
     private static void showParameters() {

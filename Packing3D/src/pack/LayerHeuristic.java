@@ -18,11 +18,13 @@ public class LayerHeuristic {
         Box.Orientation bestOrientation = null;
         int bestBoxesPerLayer = 0;
         int bestLayers = 0;
-        double bestTime = 0.0; // ms de resolver la capa (1 solve)
 
         System.out.println("=== Heurística por Capas (versión simplificada) ===");
         System.out.println("Contenedor: L=" + instance.getL() + " W=" + instance.getW() + " H=" + instance.getH());
         System.out.println();
+
+        // Iniciar medición de tiempo total
+        long startTimeTotal = System.nanoTime();
 
         for (Box.Orientation o : Box.Orientation.values()) {
             Box sample = new Box(0, 0, 0, o);
@@ -33,8 +35,6 @@ public class LayerHeuristic {
             model.solve();
 
             int boxesInLayer = model.getSolutionCount();
-            double solveTime = model.getSolveTime(); // ms
-
             int totalBoxes = boxesInLayer * layers;
 
             System.out.printf(
@@ -47,7 +47,6 @@ public class LayerHeuristic {
                 bestOrientation = o;
                 bestBoxesPerLayer = boxesInLayer;
                 bestLayers = layers;
-                bestTime = solveTime; // guardamos el tiempo de la mejor orientación
             }
         }
 
@@ -56,7 +55,6 @@ public class LayerHeuristic {
         System.out.println("Cajas por capa: " + bestBoxesPerLayer);
         System.out.println("Cantidad de capas: " + bestLayers);
         System.out.println("Total de cajas en el contenedor: " + bestTotal);
-        System.out.printf("Tiempo total de resolución (1 capa): %.2f segundos\n", bestTime / 1000.0);
 
         // === FASE DE RELLENO 3D ===
         System.out.println("\n=== Fase de Relleno (espacios vacíos) ===");
@@ -75,12 +73,14 @@ public class LayerHeuristic {
         CompleteModel residual = new CompleteModel(instance, disc, fixed);
         residual.solve();
 
+        // Finalizar medición de tiempo total
+        long endTimeTotal = System.nanoTime();
+        double totalTimeMs = (endTimeTotal - startTimeTotal) / 1_000_000.0;
+
         // === ACUMULAR Y GUARDAR ===
         int baseBoxes = bestBoxesPerLayer * bestLayers;
         int residualBoxes = residual.getPackedCount();
         int totalBoxes = baseBoxes + residualBoxes;
-
-        double totalTimeMs = bestTime + residual.getSolveTimeMs();
 
         _lastBaseBoxes = baseBoxes;
         _lastResidualBoxes = residualBoxes;
