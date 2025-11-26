@@ -7,11 +7,11 @@ import pack.*;
 
 public class EntryPoint {
 
-    static final int L = 300, W = 280, H = 130; // contenedor fijo
+    static final int L = 400, W = 240, H = 130; // contenedor fijo
 
     public static void main(String[] args) {
         int[][] cajas = {
-            {300,260,120},{30,30,84},{40,35,75},{40,43,84},{40,40,75},{40,45,84},
+            {30,30,85},{30,30,84},{40,35,75},{40,43,84},{40,40,75},{40,45,84},
             {40,40,76},{40,37,75},{41,37,75},{41,24,113},{45,35,61},{45,30,84},
             {45,32,84},{45,30,84},{50,45,109},{50,50,91},{55,40,80},{60,20,141},
             {62,39,92},{64,39,93},{69,40,95},{125,19,118},{130,55,75},{130,45,62},
@@ -77,10 +77,7 @@ public class EntryPoint {
     private static List<BlockType> buildBlocks(Instance instance) {
         List<BlockType> t = new ArrayList<>();
 
-        // Bloques de 2 cajas
-        t.add(new BlockType(3,1,1, instance));
-        t.add(new BlockType(1,3,1, instance));
-        t.add(new BlockType(1,1,3, instance));
+       // Bloques
         t.add(new BlockType(2,1,1, instance));
         t.add(new BlockType(1,2,1, instance));
         t.add(new BlockType(1,1,2, instance));
